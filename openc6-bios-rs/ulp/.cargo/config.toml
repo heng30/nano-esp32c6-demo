@@ -1,0 +1,12 @@
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+# LP 程序链接在 LP RAM 起始处，入口必须是镜像的第一个字节
+rustflags = [
+  "-C", "link-arg=-Tlinker.ld",
+  "-C", "link-arg=--gc-sections",
+]
+
+[env]
+DEFMT_LOG = "off"

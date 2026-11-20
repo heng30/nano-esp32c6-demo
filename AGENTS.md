@@ -18,7 +18,7 @@
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
 | `ble-server/`、`ble-headset/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server` / `headset`（`[[bin]]` 指定）；带 `build.rs` 做 `linker_be_nice()` | `.cargo/config.toml` 里多一条 `build-std = ["core"]`，`rustflags` 里**没有** `-Tdefmt.x`/`-Tlinkall.x`（由 `build.rs` 的 `rustc-link-arg` 给） |
 | `esp32c6-top50/` | 抓下来做参考的上游仓库克隆 + 报告（`REPORT.md`、`BARE-CHIP-ONLY.md`） | **只读**，已 gitignore，不要改、不要当本仓代码提交 |
-| `openc6-bios-rs/` | 空目录，未开工 | |
+| `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall` 系统调用、日志式环形 flash 文件系统、ZC6 压缩、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | 自带全局汇编 trap 向量表（`.rwtext`，必须 IRAM）；`src/web/index.html` 直接来自上游；`Rompass__openc6-bios` 是指向 `esp32c6-top50/` 的只读符号链接 |
 
 ## 依赖约定（workspace）
 

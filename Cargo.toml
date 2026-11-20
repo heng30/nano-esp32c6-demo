@@ -5,13 +5,14 @@ members = [
   "http-ping",
   "ble-server",
   "qapass-1602a-lcd",
+  "openc6-bios-rs",
 
   # 没有测试
   "3461BS",
   "ILI9341-LCD",
 ]
 
-exclude = ["esp32c6-top50", "openc6-bios-rs"]
+exclude = ["esp32c6-top50"]
 
 [workspace.package]
 version = "0.1.0"
@@ -55,8 +56,11 @@ embassy-time = { version = "0.5", default-features = false, features = [
 embassy-net = { version = "0.9", default-features = false, features = [
   "tcp",
   "udp",
+  "dns",
+  "dhcpv4",
   "proto-ipv4",
   "medium-ethernet",
+  "defmt",
 ] }
 
 esp-hal = { version = "1.2", default-features = false, features = [
@@ -85,6 +89,10 @@ esp-bootloader-esp-idf = { version = "0.6", default-features = false, features =
   "esp32c6",
   "defmt",
   "validation",
+] }
+esp-storage = { version = "0.10", default-features = false, features = [
+  "esp32c6",
+  "embedded-storage",
 ] }
 esp-hal-smartled = { version = "0.18", default-features = false, features = [
   "esp32c6",

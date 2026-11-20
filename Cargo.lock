@@ -723,6 +723,7 @@ version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "347bc855bdbdf50ed9c5a1d80e8204badb0ba149b8732dde38e1e9708ed9d313"
 dependencies = [
+ "defmt 1.2.0",
  "document-features",
  "embassy-net-driver",
  "embassy-sync 0.8.0",
@@ -739,6 +740,9 @@ name = "embassy-net-driver"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "524eb3c489760508f71360112bca70f6e53173e6fe48fc5f0efd0f5ab217751d"
+dependencies = [
+ "defmt 0.3.101",
+]
 
 [[package]]
 name = "embassy-sync"
@@ -1246,6 +1250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ef0e785f54e316f64a1e14a7a2f061a2ea0b038b284902ca71e1e1f5574cf47"
 dependencies = [
  "document-features",
+ "embedded-storage",
  "esp-hal",
  "esp-hal-procmacros",
  "esp-metadata-generated",
@@ -2029,6 +2034,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "openc6-bios-rs"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "defmt 1.2.0",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-net",
+ "embassy-sync 0.8.0",
+ "embassy-time",
+ "esp-alloc",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-hal-smartled",
+ "esp-radio",
+ "esp-rtos",
+ "esp-storage",
+ "rtt-target",
+ "smart-leds-trait",
+ "static_cell",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2450,6 +2478,7 @@ dependencies = [
  "bitflags",
  "byteorder",
  "cfg-if",
+ "defmt 0.3.101",
  "heapless 0.9.4",
  "managed",
 ]

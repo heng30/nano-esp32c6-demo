@@ -1,0 +1,15 @@
+[package]
+name = "openc6-me-core"
+version = "0.1.0"
+edition = "2024"
+
+# 独立于根 workspace：目标三元组、链接脚本、rustflags 都和主固件不同
+[workspace]
+
+[dependencies]
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
