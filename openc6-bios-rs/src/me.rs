@@ -148,6 +148,49 @@ mod shared {
     pub const HEARTBEAT: usize = 0x10;
     /// LP 侧记录的「请 HP 侧执行的请求」：0 无、2 长按进 Setup、3 长按强复位、4 喂狗停滞。
     pub const REQ: usize = 0x18;
+    /// HP 侧忙计数。
+    pub const HP_BUSY_TICKS: usize = 0x1C;
+    /// HP 侧闲计数。
+    pub const HP_IDLE_TICKS: usize = 0x20;
+    /// LP 侧算出的 CPU 占用百分比。
+    pub const CPU_LOAD: usize = 0x24;
+    /// LP 侧实际下发的频率（MHz）。
+    pub const TARGET_FREQ: usize = 0x28;
+}
+
+/// 把 NVRAM 的频率档位换算成 MHz。
+fn cpu_freq_mhz(f: nvram::CpuFreq) -> u32 {
+    match f {
+        nvram::CpuFreq::Mhz80 => 80,
+        nvram::CpuFreq::Mhz120 => 120,
+        nvram::CpuFreq::Mhz160 => 160,
+    }
+}
+
+/// LP 侧算出的 CPU 占用百分比。
+pub fn lp_cpu_load() -> u32 {
+    shared_read(shared::CPU_LOAD)
+}
+
+/// LP 侧实际下发的频率（MHz）。
+pub fn lp_target_freq() -> u32 {
+    shared_read(shared::TARGET_FREQ)
+}
+
+/// 记一次「忙」：Shell 正在执行命令。
+pub fn note_busy() {
+    if is_active() {
+        let v = shared_read(shared::HP_BUSY_TICKS).wrapping_add(1);
+        shared_write(shared::HP_BUSY_TICKS, v);
+    }
+}
+
+/// 记一次「闲」：Shell 在等输入。
+pub fn note_idle() {
+    if is_active() {
+        let v = shared_read(shared::HP_IDLE_TICKS).wrapping_add(1);
+        shared_write(shared::HP_IDLE_TICKS, v);
+    }
 }
 
 /// 共享区某个变量字地址。
@@ -290,6 +333,10 @@ pub fn pet_watchdog() {
 
     let cfg = nvram::get();
     let temp = sample_temperature();
+
+
+    update_governor(&cfg);
+
     if temp >= cfg.thermal_emergency_c as u32 && temp != 0 {
         crate::hal::console::print("\r\n[THERMAL_CRITICAL] 结温超过紧急阈值，进入 S5。\r\n");
         crate::hal::power::enter_s5();
@@ -315,4 +362,90 @@ pub fn boot_reason() -> BootReason {
 /// 清启动原因。
 pub fn clear_boot_reason() {
     BOOT_REASON.store(BootReason::None as u32, Ordering::Release);
+}
+
+/// 调频决策周期（毫秒）。
+const GOV_PERIOD_MS: u32 = 100;
+/// 降频抖动抑制保持时间（毫秒）。
+const GOV_DOWN_HOLD_MS: u32 = 1000;
+/// 升到中频档的占用率阈值（百分比）。
+const GOV_MID_LOAD: u32 = 20;
+/// 升到高频档的占用率阈值（百分比）。
+const GOV_HIGH_LOAD: u32 = 70;
+
+/// 下一次调频决策的时刻（embassy 毫秒）。
+static GOV_NEXT_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// 上一周期的忙计数。
+static GOV_LAST_BUSY: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// 上一周期的闲计数。
+static GOV_LAST_IDLE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// 当前已下发的频率（MHz）。
+static GOV_APPLIED: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// 降频抑制已累计的时间（毫秒）。
+static GOV_HOLD_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// 自治调频：按忙闲比三档决策，升频立即生效、降频保持 1 秒。
+///
+/// 决策放在 HP 侧而不是上游的 LP 核：PCR 在 HP 外设空间，LP 核写不进去
+/// （实测写入后 `clock::get_cpu_mhz()` 读回仍是原值）。
+fn update_governor(cfg: &nvram::Config) {
+    use core::sync::atomic::Ordering;
+
+    let now = embassy_time::Instant::now().as_millis() as u32;
+    if now < GOV_NEXT_MS.load(Ordering::Relaxed) {
+        return;
+    }
+    GOV_NEXT_MS.store(now + GOV_PERIOD_MS, Ordering::Relaxed);
+
+    let busy = shared_read(shared::HP_BUSY_TICKS);
+    let idle = shared_read(shared::HP_IDLE_TICKS);
+    let delta_busy = busy.wrapping_sub(GOV_LAST_BUSY.load(Ordering::Relaxed));
+    let delta_idle = idle.wrapping_sub(GOV_LAST_IDLE.load(Ordering::Relaxed));
+    GOV_LAST_BUSY.store(busy, Ordering::Relaxed);
+    GOV_LAST_IDLE.store(idle, Ordering::Relaxed);
+
+    let total = delta_busy.saturating_add(delta_idle);
+    let load = if total > 0 {
+        delta_busy.saturating_mul(100) / total
+    } else {
+        0
+    };
+    shared_write(shared::CPU_LOAD, load);
+
+    let temp = sample_temperature();
+    let max_mhz = cpu_freq_mhz(cfg.cpu_freq);
+    let mut target = 80;
+
+    if cfg.cpu_governor == nvram::CpuGovernor::Performance {
+        target = max_mhz;
+    } else if temp == 0 || temp < cfg.thermal_throttle_c as u32 {
+        if load >= GOV_HIGH_LOAD {
+            target = 160;
+        } else if load >= GOV_MID_LOAD {
+            target = 120;
+        }
+    }
+    if target > max_mhz {
+        target = max_mhz;
+    }
+
+    let applied = GOV_APPLIED.load(Ordering::Relaxed);
+    if target > applied {
+        GOV_APPLIED.store(target, Ordering::Relaxed);
+        GOV_HOLD_MS.store(0, Ordering::Relaxed);
+        crate::hal::clock::set_cpu_mhz_raw(target);
+        shared_write(shared::TARGET_FREQ, target);
+    } else if target < applied {
+        let hold = GOV_HOLD_MS.load(Ordering::Relaxed) + GOV_PERIOD_MS;
+        if hold >= GOV_DOWN_HOLD_MS {
+            GOV_APPLIED.store(target, Ordering::Relaxed);
+            GOV_HOLD_MS.store(0, Ordering::Relaxed);
+            crate::hal::clock::set_cpu_mhz_raw(target);
+            shared_write(shared::TARGET_FREQ, target);
+        } else {
+            GOV_HOLD_MS.store(hold, Ordering::Relaxed);
+        }
+    } else {
+        GOV_HOLD_MS.store(0, Ordering::Relaxed);
+    }
 }

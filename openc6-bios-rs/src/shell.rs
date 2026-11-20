@@ -59,6 +59,7 @@ pub async fn repl(spawner: Spawner) -> ! {
             if !console::has_data() {
                 me::pet_watchdog();
                 me::poll_lp_requests();
+                me::note_idle();
                 embassy_time::Timer::after(embassy_time::Duration::from_millis(5)).await;
                 continue;
             }
@@ -80,6 +81,7 @@ pub async fn repl(spawner: Spawner) -> ! {
                                 Err(e) => console::print(&format!("pxe failed: {e}\r\n")),
                             }
                         } else {
+                            me::note_busy();
                             run(&line, &mut sh, None);
                         }
                     }
@@ -153,8 +155,9 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
         "info" => {
             let cfg = nvram::get();
             emit(&format!(
-                "CPU            : {} MHz\r\n\
+                "CPU            : {} MHz (LP 目标 {} MHz)\r\n\
                  Governor       : {:?}\r\n\
+                 CPU load       : {} %\r\n\
                  Temp           : {} C\r\n\
                  ME             : {}\r\n\
                  LP heartbeat   : {}\r\n\
@@ -163,7 +166,9 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                  ZC6 swap mode  : {:?}\r\n\
                  Wi-Fi          : {} ({})\r\n",
                 clock::get_cpu_mhz(),
+                me::lp_target_freq(),
                 cfg.cpu_governor,
+                me::lp_cpu_load(),
                 me::temperature_c(),
                 if me::is_active() { "ACTIVE" } else { "OFF" },
                 me::lp_heartbeat(),

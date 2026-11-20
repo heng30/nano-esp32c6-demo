@@ -77,7 +77,7 @@ bit 24..30      SPI Flash 总线
 | `boot_manager` | `src/shell.rs`、`src/proc.rs` | shell 与页池/进程表已移植 |
 | `led_mgmt` | `src/led.rs` | 已移植，Aura 灯效走 embassy 任务 |
 | `wifi_mgmt`、`web_ui`、`pxe_boot` | `src/net.rs`、`src/pxe.rs` | AP/STA、BIOS Setup Web UI、`/wsh` 远程 shell、PXE 下载已移植；STA + DHCP + PXE 已在板上实测通过 |
-| `power_mgmt` | `src/power.rs` | 已移植：AI Tweaker 应用 + 动态调频任务 |
+| `power_mgmt` | `src/power.rs`、`src/me.rs` | 已移植：AI Tweaker 应用 + 自治调频（`me::update_governor`，按忙闲比三档、升频立即/降频保持 1 s） |
 | `management_engine`（LP-Core） | `src/me.rs`、`ulp/` | **部分**：LP 核已跑起来（心跳、电源键采集、喂狗停滞检出），检出后由 HP 侧执行复位；LP 侧直接触发复位未打通，见「已知缺口」 |
 
 ## 与上游的运行时差异
@@ -128,11 +128,17 @@ C6 会把这种复位报成 `ChipPowerOn`，光看复位原因区分不出「真
 
    所以现在 LP 核只做**采集与记录**，复位由 HP 侧 `me::poll_lp_requests()` 执行。
    后果：主核只是逻辑卡死（还能调度）时能自救；**主核彻底停摆时无法自救**。
-2. **payload 的后台进程**。`boot <path> bg` 返回错误。U-Mode 会话要真正并发，得把沙箱放进
+
+2. **自治调频也在 HP 侧**。上游在 LP 核里直接写 PCR（`0x60096118`）改主频，这里做不到：
+   LP 核能正常读写 **LP 外设空间**（`LP_IO 0x600B2000`、`LP_WDT 0x600B1C00` 都实测通过），
+   但 PCR 属于 **HP 外设空间**，LP 核写入后 `clock::get_cpu_mhz()` 读回仍是原值。
+   因此 `me::update_governor()` 每 100 ms 按忙闲比三档决策，升频立即生效、降频保持 1 s，
+   并限制在 NVRAM 配置的频率上限内；`Performance` 策略直接锁上限。
+3. **payload 的后台进程**。`boot <path> bg` 返回错误。U-Mode 会话要真正并发，得把沙箱放进
    独立的抢占式线程，并让 trap 路径能跨任务保存 `mscratch`。
-3. **payload 的 BSD socket 系统调用**（`SYS_TCP_*`）。上游靠 lwIP 的阻塞 socket；embassy-net
+4. **payload 的 BSD socket 系统调用**（`SYS_TCP_*`）。上游靠 lwIP 的阻塞 socket；embassy-net
    是异步的，在 trap 上下文里驱动不了执行器，所以返回 `-1`。内核侧的 Web UI / PXE / OTA 正常。
-4. **ZSWAP 内存压缩**。`suspend` 只冻结进程状态，没有把 arena 页压缩回收。
+5. **ZSWAP 内存压缩**。`suspend` 只冻结进程状态，没有把 arena 页压缩回收。
 
 另外：**烧录用 `espflash`，别用 `probe-rs`**。`probe-rs` 解析分区表时会在 `openc6_fs` 的
 `0xff` 子类型上 panic，那是 `esp-idf-part 0.6.0` 的枚举缺项，不是分区表本身有错。
