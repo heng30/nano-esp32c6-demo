@@ -131,6 +131,26 @@ pub fn enter_s5() -> ! {
     low_power.sleep_deep(esp_hal::rtc_cntl::sleep::RtcSleepConfig::default())
 }
 
+/// 进 S5 并挂一个绝对时间闹钟，到点芯片自己复位醒来。
+///
+/// 测试 `poweroff` 时用它：深睡会让 USB 整个断开、控制台消失，
+/// 万一手边没有按键或接线，板子会一直睡着。定时唤醒让这条路径自带兜底。
+///
+/// `secs` 必须留够余量（≥ 2 秒），
+/// 唤醒时刻太近时 `sleep_deep` 会 panic（睡眠切换来不及捕获）。
+pub fn enter_s5_with_timer(secs: u64) -> ! {
+    gpio::set_output(gpio::PIN_PWR_BTN_GND);
+    gpio::write_pin(gpio::PIN_PWR_BTN_GND, false);
+    gpio::set_input(gpio::PIN_PWR_BTN_SENSE, true);
+
+    let lpwr = unsafe { esp_hal::peripherals::LPWR::steal() };
+    let mut low_power = esp_hal::rtc_cntl::sleep::LowPower::new(lpwr);
+    low_power.set_wakeup_deadline(
+        esp_hal::time::Instant::now() + esp_hal::time::Duration::from_secs(secs),
+    );
+    low_power.sleep_deep(esp_hal::rtc_cntl::sleep::RtcSleepConfig::default())
+}
+
 /// 配置 ext1 在 GPIO4 任意低电平时唤醒。
 ///
 /// shortcut: 只支持 C6 的 EXT1 单组位图语义，多组/高电平唤醒没实现，换芯片时重写。

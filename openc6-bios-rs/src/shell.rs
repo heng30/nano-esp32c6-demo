@@ -137,7 +137,7 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
              mem                           内存与 arena 用量\r\n\
              top                           进程表与页池状态\r\n\
              reboot                        热重启\r\n\
-             poweroff | exit               进 S5 软关机\r\n\
+             poweroff [秒] | exit          进 S5 软关机，带秒数则定时自动唤醒\r\n\
              boot <path> [bg]              在 U-Mode 沙箱里跑 payload\r\n\
              kill <pid>                    终止进程\r\n\
              suspend [pid]                 挂起进程（ZSWAP 压缩）\r\n\
@@ -208,10 +208,19 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
             power::reboot();
         }
         "poweroff" | "exit" => {
-            emit("entering S5...\r\n");
             crate::led::set_aura_mode(nvram::AuraMode::Disabled);
             crate::led::set_color(0, 0, 0);
-            power::enter_s5();
+            // 带秒数就挂定时唤醒，测试时不会把板子睡死
+            match args.get(1).and_then(|s| s.parse::<u64>().ok()) {
+                Some(secs) => {
+                    emit(&format!("entering S5, auto-wake in {secs}s...\r\n"));
+                    power::enter_s5_with_timer(secs.max(2));
+                }
+                None => {
+                    emit("entering S5...\r\n");
+                    power::enter_s5();
+                }
+            }
         }
         "boot" => match args.get(1) {
             Some(path) => {
