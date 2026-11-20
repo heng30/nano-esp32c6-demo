@@ -1,0 +1,24 @@
+[package]
+edition.workspace = true
+name = "ble-server"
+version.workspace = true
+
+[[bin]]
+name = "server"
+path = "./src/bin/server.rs"
+
+[dependencies]
+defmt.workspace = true
+esp-alloc.workspace = true
+static_cell.workspace = true
+critical-section.workspace = true
+rtt-target.workspace = true
+embassy-time.workspace = true
+embassy-sync.workspace = true
+panic-rtt-target.workspace = true
+embassy-executor.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-hal.workspace = true
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+esp-radio = { workspace = true, features = ["ble"] }
+trouble-host.workspace = true

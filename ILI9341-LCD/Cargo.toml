@@ -1,0 +1,20 @@
+[package]
+name = "ili9341-lcd"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+embassy-futures.workspace = true
+critical-section.workspace = true
+static_cell.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+
+mipidsi.workspace = true
+embedded-graphics.workspace = true

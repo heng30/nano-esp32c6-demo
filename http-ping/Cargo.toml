@@ -1,0 +1,26 @@
+[package]
+name = "http-ping"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+defmt.workspace = true
+static_cell.workspace = true
+smart-leds-trait.workspace = true
+rtt-target.workspace = true
+
+edge-dhcp.workspace = true
+edge-nal.workspace = true
+edge-nal-embassy.workspace = true
+
+esp-hal.workspace = true
+esp-alloc.workspace = true
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+esp-hal-smartled.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-radio = { workspace = true, features = ["wifi"] }
+
+embassy-time.workspace = true
+embedded-io-async.workspace = true
+embassy-executor.workspace = true
+embassy-net.workspace = true
