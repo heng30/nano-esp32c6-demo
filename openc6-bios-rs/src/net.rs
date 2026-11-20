@@ -409,9 +409,20 @@ async fn http_task(stack: &'static Stack<'static>) {
         let _ = socket.write(response.as_bytes()).await;
         let _ = socket.flush().await;
         socket.close();
+
+        // 重启请求要等响应真正发出去再动手，否则浏览器只看到连接被断开
+        if REBOOT_PENDING.load(Ordering::Acquire) {
+            crate::hal::console::print("[WEB] 重启中...\r\n");
+            embassy_time::Timer::after(Duration::from_millis(200)).await;
+            crate::hal::power::reboot();
+        }
+
         embassy_time::Timer::after(Duration::from_millis(10)).await;
     }
 }
+
+/// Web UI 请求重启后，等响应发完再真正重启。
+static REBOOT_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// 路由一条 HTTP 请求。
 async fn handle_request(raw: &[u8]) -> String {
@@ -441,6 +452,7 @@ async fn handle_request(raw: &[u8]) -> String {
         ("GET", "/api/sysinfo") => http_ok("application/json", &sysinfo_json()),
         ("POST", "/api/reboot") => {
             defmt::warn!("[WEB] 收到重启请求");
+            REBOOT_PENDING.store(true, Ordering::Release);
             http_ok("application/json", "{\"ok\":true}")
         }
         ("POST", "/api/defaults") => {
