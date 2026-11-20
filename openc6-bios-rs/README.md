@@ -4,6 +4,9 @@
 移植到 Rust：`esp-hal 1.2` + `esp-rtos` + `embassy`，目标三元组 `riscv32imac-unknown-none-elf`，
 日志 `defmt` over RTT。
 
+> **想直接用起来的看 [USAGE.md](./USAGE.md)** —— 逐项讲每条命令、Web UI、PXE/OTA、
+> 调频与深睡、LP 核怎么使唤。本文件讲移植状态与和上游的差异。
+
 上游源码以只读符号链接形式留在 `Rompass__openc6-bios/`，指向 `../esp32c6-top50/repos/Rompass__openc6-bios`，
 移植时对照用，不参与构建。
 
