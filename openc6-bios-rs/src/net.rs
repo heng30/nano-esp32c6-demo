@@ -47,6 +47,10 @@ static STACK_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static STA_STACK_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static CONTROLLER_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static CONNECTED: AtomicBool = AtomicBool::new(false);
+/// 正在扫描：期间不发起关联，驱动文档明确扫描与连接会互相打断。
+static SCANNING: AtomicBool = AtomicBool::new(false);
+/// `wifi_task` 正持有控制器做关联；扫描前必须等它让出，否则两个 `&mut` 并发访问驱动。
+static WIFI_BUSY: AtomicBool = AtomicBool::new(false);
 static WIFI_READY: AtomicBool = AtomicBool::new(false);
 static WIFI_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 /// 控制台输出环形缓冲，供远程 shell 拉取。
@@ -199,9 +203,8 @@ pub fn init(spawner: Spawner) -> Option<&'static Stack<'static>> {
     };
     STACK_PTR.store(ap as *const _ as *mut (), Ordering::Release);
 
-    if has_sta {
-        spawn_sta(spawner, seed)?;
-    }
+    // STA netif 无条件建：有凭据时关联，没凭据时也能让 `wifi scan` 工作
+    spawn_sta(spawner, seed)?;
 
     let controller: &'static mut WifiController<'static> = {
         static C: StaticCell<WifiController<'static>> = StaticCell::new();
@@ -241,14 +244,9 @@ fn spawn_sta(spawner: Spawner, seed: u64) -> Option<&'static Stack<'static>> {
     Some(sta)
 }
 
-/// 补建 STA 接口：开机时没凭据就只建了 AP，`wifi connect` 之后得能补上。
-pub fn ensure_sta(spawner: Spawner) -> bool {
-    if sta_present() {
-        return true;
-    }
-    let rng = esp_hal::rng::Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-    spawn_sta(spawner, seed).is_some()
+/// 是否配了 STA 凭据：决定要不要发起关联、扫描要不要临时打开 STA 接口。
+pub fn has_sta_creds() -> bool {
+    !nvram::get().ssid_str().is_empty()
 }
 
 fn ap_config(ssid: &str, pass: &str) -> AccessPointConfig {
@@ -347,11 +345,6 @@ pub fn stack_ptr_is_null() -> bool {
     STACK_PTR.load(Ordering::Acquire).is_null()
 }
 
-/// 是否配置了 STA 接口（NVRAM 里有凭据）。
-pub fn sta_present() -> bool {
-    !STA_STACK_PTR.load(Ordering::Acquire).is_null()
-}
-
 /// STA 侧拿到的地址；未连接时返回 `-`。
 pub fn sta_ip_string() -> String {
     sta_stack()
@@ -360,38 +353,78 @@ pub fn sta_ip_string() -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-/// 扫描周边 AP 并打印结果。
+/// 扫描周边 AP，返回可直接打印的报告。
 ///
-/// `scan_async` 是异步的，只能从异步的 `repl` 里调；同步的 `run()` 分发不到这里。
-/// AP-only 模式下驱动不支持扫描，提前挡掉给个明确提示。
-pub async fn scan_print() {
-    if !sta_present() {
-        console::print("wifi scan: 只有 AP 接口时驱动不支持扫描，先 wifi connect 配好 STA\r\n");
-        return;
+/// AP-only 模式下驱动不支持扫描，没配 STA 凭据时临时切到 STA+AP，扫完再切回去。
+pub async fn scan_text() -> String {
+    let mut out = String::new();
+    if controller().is_none() {
+        out.push_str("wifi scan: 先 setup 或 wifi connect 初始化 Wi-Fi\r\n");
+        return out;
     }
-    let Some(ctrl) = controller() else {
-        console::print("wifi scan: 先 setup 或 wifi connect 初始化 Wi-Fi\r\n");
-        return;
-    };
 
-    console::print("扫描中...\r\n");
-    let cfg = ScanConfig::default().with_max(16);
-    match ctrl.scan_async(&cfg).await {
-        Ok(list) => {
-            console::print("SSID                             RSSI  CH\r\n");
-            console::print("-------------------------------------------\r\n");
+    let restore_ap_only = !has_sta_creds();
+
+    // 先挡住重连，再等正在进行的关联收尾；驱动不允许扫描与关联同时进行。
+    SCANNING.store(true, Ordering::Release);
+    let mut waited = 0u32;
+    while WIFI_BUSY.load(Ordering::Acquire) && waited < 50 {
+        embassy_time::Timer::after(Duration::from_millis(200)).await;
+        waited += 1;
+    }
+
+    if restore_ap_only {
+        let _ = controller().is_some_and(|c| {
+            c.set_config(&Config::AccessPointStation(
+                StationConfig::default(),
+                ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS),
+            ))
+            .is_ok()
+        });
+        embassy_time::Timer::after(Duration::from_millis(200)).await;
+    }
+
+    // 默认主动扫描每个信道只等 10–20 ms，弱天线下一轮扫下来会漏掉一大半 AP
+    let cfg = ScanConfig::default()
+        .with_scan_type(esp_radio::wifi::scan::ScanTypeConfig::Active {
+            min: esp_hal::time::Duration::from_millis(80),
+            max: esp_hal::time::Duration::from_millis(120),
+        })
+        .with_max(16);
+    let result = match controller() {
+        Some(c) => Some(c.scan_async(&cfg).await),
+        None => None,
+    };
+    SCANNING.store(false, Ordering::Release);
+
+    if restore_ap_only {
+        let _ = controller().is_some_and(|c| {
+            c.set_config(&Config::AccessPoint(ap_config(
+                crate::BIOS_AP_SSID,
+                crate::BIOS_AP_PASS,
+            )))
+            .is_ok()
+        });
+    }
+
+    match result {
+        Some(Ok(list)) => {
+            out.push_str("SSID                             RSSI  CH\r\n");
+            out.push_str("-------------------------------------------\r\n");
             for ap in &list {
-                console::print(&format!(
+                out.push_str(&format!(
                     "{:<32} {:>4}  {:>2}\r\n",
                     ap.ssid.as_str(),
                     ap.signal_strength,
                     ap.channel
                 ));
             }
-            console::print(&format!("共 {} 个\r\n", list.len()));
+            out.push_str(&format!("共 {} 个\r\n", list.len()));
         }
-        Err(_) => console::print("wifi scan 失败\r\n"),
+        Some(Err(_)) => out.push_str("wifi scan 失败\r\n"),
+        None => out.push_str("wifi scan: 控制器不可用\r\n"),
     }
+    out
 }
 
 #[embassy_executor::task]
@@ -446,9 +479,17 @@ async fn dhcp_task(stack: &'static Stack<'static>, gw: Ipv4Addr) {
 #[embassy_executor::task]
 async fn wifi_task() {
     loop {
-        if sta_present() && !CONNECTED.load(Ordering::Acquire) {
+        // 扫描期间不碰控制器：驱动文档明确扫描与关联会互相打断
+        if SCANNING.load(Ordering::Acquire) {
+            embassy_time::Timer::after(Duration::from_millis(100)).await;
+            continue;
+        }
+        if has_sta_creds() && !CONNECTED.load(Ordering::Acquire) {
             if let Some(c) = controller() {
-                match c.connect_async().await {
+                WIFI_BUSY.store(true, Ordering::Release);
+                let r = c.connect_async().await;
+                WIFI_BUSY.store(false, Ordering::Release);
+                match r {
                     Ok(_) => defmt::info!("[NET] 关联成功"),
                     Err(e) => {
                         defmt::info!("[NET] 关联失败: {}", defmt::Debug2Format(&e));
@@ -633,7 +674,7 @@ async fn handle_request(raw: &[u8]) -> String {
                 http_error(400, "BAD REQUEST")
             } else {
                 // 命令输出直接进环形缓冲，前端靠 /c6wsh/stream 增量取回
-                let _ = shell::execute_capture(cmd);
+                shell::execute_capture(cmd).await;
                 http_ok("text/plain; charset=utf-8", "OK")
             }
         }
@@ -651,7 +692,8 @@ async fn handle_request(raw: &[u8]) -> String {
             let output = if cmd.trim().is_empty() {
                 pending
             } else {
-                alloc::format!("{pending}{}", shell::execute_capture(&cmd))
+                let res = shell::execute_capture(&cmd).await;
+                alloc::format!("{pending}{res}")
             };
             http_ok("text/plain; charset=utf-8", &output)
         }

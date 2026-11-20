@@ -21,17 +21,52 @@ struct Shell {
 }
 
 /// 执行一条命令并把输出写进返回的字符串（供 Web Shell 复用）。
-pub fn execute_capture(line: &str) -> String {
+pub async fn execute_capture(line: &str) -> String {
     let mut out = String::new();
-    run(
-        line,
-        &mut Shell {
-            cwd: 0,
-            spawner: None,
-        },
-        Some(&mut out),
-    );
+    let mut sh = Shell {
+        cwd: 0,
+        spawner: None,
+    };
+    execute(line, &mut sh, Some(&mut out)).await;
     out
+}
+
+/// 统一入口：先拦下必须 await 的命令，其余交给同步的 `run`。
+///
+/// 交互式 shell 与 Web Shell 共用这个入口，保证两条路径行为一致。
+async fn execute(line: &str, sh: &mut Shell, capture: Option<&mut String>) {
+    let words: Vec<&str> = line.split_whitespace().collect();
+
+    if words.len() == 2 && words[0] == "wifi" && words[1] == "scan" {
+        let text = crate::net::scan_text().await;
+        console::print(&text);
+        if let Some(out) = capture {
+            out.push_str(&text);
+        }
+        return;
+    }
+
+    if let Some(&"pxe") = words.first() {
+        let url = line.trim().strip_prefix("pxe").unwrap_or("").trim();
+        if url.is_empty() {
+            console::print("usage: pxe <url>\r\n");
+            return;
+        }
+        let head = format!("downloading {url} ...\r\n");
+        console::print(&head);
+        let tail = match crate::pxe::download_payload(url).await {
+            Ok(n) => format!("{n} bytes stored in /downloaded/payload.bin\r\n"),
+            Err(e) => format!("pxe failed: {e}\r\n"),
+        };
+        console::print(&tail);
+        if let Some(out) = capture {
+            out.push_str(&head);
+            out.push_str(&tail);
+        }
+        return;
+    }
+
+    run(line.trim(), sh, capture);
 }
 
 /// 跑交互式 shell，直到用户 `poweroff`。
@@ -69,21 +104,9 @@ pub async fn repl(spawner: Spawner) -> ! {
                 b'\r' | b'\n' => {
                     console::print("\r\n");
                     if !line.is_empty() {
-                        // `wifi scan` / `pxe` 要 await，同步的 run() 分发不了，单独拦
-                        if line.trim() == "wifi scan" {
-                            crate::net::scan_print().await;
-                        } else if let Some(url) = line.trim().strip_prefix("pxe ") {
-                            console::print(&format!("downloading {url} ...\r\n"));
-                            match crate::pxe::download_payload(url.trim()).await {
-                                Ok(n) => console::print(&format!(
-                                    "{n} bytes stored in /downloaded/payload.bin\r\n"
-                                )),
-                                Err(e) => console::print(&format!("pxe failed: {e}\r\n")),
-                            }
-                        } else {
-                            me::note_busy();
-                            run(&line, &mut sh, None);
-                        }
+                        me::note_busy();
+                        // 统一走异步入口：`wifi scan` / `pxe` 需要 await
+                        execute(&line, &mut sh, None).await;
                     }
                     break;
                 }
@@ -178,7 +201,7 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 crate::net::ip_string(),
                 if crate::net::is_connected() {
                     "STA+AP connected"
-                } else if crate::net::sta_present() {
+                } else if crate::net::has_sta_creds() {
                     "STA+AP down"
                 } else {
                     "AP beaconing"
@@ -278,13 +301,13 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 Err(e) => emit(&format!("serial failed: {e}\r\n")),
             }
         }
-        // 真正的下载在 repl 里异步执行；这里只兜底提示，避免同步路径阻塞执行器
-        "pxe" => emit("pxe 需要在交互式 shell 里执行\r\n"),
+        // 真正的下载在统一入口 `execute` 里异步执行，这里只是裸 `pxe`
+        "pxe" => emit("usage: pxe <url>\r\n"),
         "wifi" => match args.get(1).copied() {
             Some("status") => {
                 emit(&format!(
                     "mode   : {}\r\nap ip  : {}\r\nsta ip : {}\r\nstate  : {}\r\n",
-                    if crate::net::sta_present() { "STA+AP" } else { "AP" },
+                    if crate::net::has_sta_creds() { "STA+AP" } else { "AP" },
                     crate::net::ip_string(),
                     crate::net::sta_ip_string(),
                     if crate::net::is_connected() {
@@ -300,17 +323,18 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 nvram::update(|c| c.set_wifi_sta(ssid, pass));
                 emit("credentials saved, reconnecting...\r\n");
                 // 开机时没有凭据就不会初始化 Wi-Fi，这里按需补上，否则控制器是 None
-                match sh.spawner {
-                    Some(spawner) => {
-                        if crate::net::init(spawner).is_none() {
-                            emit("Wi-Fi 初始化失败\r\n");
-                        } else if !crate::net::ensure_sta(spawner) {
-                            emit("STA 接口创建失败\r\n");
-                        } else {
-                            emit(&format!("start_sta: {}\r\n", crate::net::start_sta()));
-                        }
+                let inited = if crate::net::stack_ptr_is_null() {
+                    match sh.spawner {
+                        Some(spawner) => crate::net::init(spawner).is_some(),
+                        None => false,
                     }
-                    None => emit("wifi connect 只在交互式 shell 里可用\r\n"),
+                } else {
+                    true
+                };
+                if !inited {
+                    emit("Wi-Fi 初始化失败（首次拉起需在交互式 shell 执行）\r\n");
+                } else {
+                    emit(&format!("start_sta: {}\r\n", crate::net::start_sta()));
                 }
             }
             Some("disconnect") => {
@@ -318,7 +342,7 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 crate::net::stop_ap();
                 emit("credentials cleared\r\n");
             }
-            Some("scan") => emit("scan: 由 STA 驱动异步进行，暂未接入命令输出\r\n"),
+            Some("scan") => emit("wifi scan 请单独执行，不接受附加参数\r\n"),
             _ => emit("usage: wifi scan|connect <ssid> [pass]|status|disconnect\r\n"),
         },
         "ls" => {
@@ -446,23 +470,29 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 None => emit("no such entry\r\n"),
             }
         }
-        "setup" => match sh.spawner {
-            Some(spawner) => {
-                if crate::net::init(spawner).is_none() {
-                    emit("Wi-Fi 初始化失败\r\n");
-                } else if crate::net::start_ap() {
-                    emit(&format!(
-                        "AP `{}` 已启动，密码 `{}`\r\n浏览 http://{}/\r\n",
-                        crate::BIOS_AP_SSID,
-                        crate::BIOS_AP_PASS,
-                        crate::net::AP_GATEWAY
-                    ));
-                } else {
-                    emit("AP 启动失败\r\n");
+        "setup" => {
+            // 已经初始化过就不需要 spawner；首次拉起才依赖交互式 shell
+            let inited = if crate::net::stack_ptr_is_null() {
+                match sh.spawner {
+                    Some(spawner) => crate::net::init(spawner).is_some(),
+                    None => false,
                 }
+            } else {
+                true
+            };
+            if !inited {
+                emit("Wi-Fi 初始化失败（首次拉起需在交互式 shell 执行）\r\n");
+            } else if crate::net::start_ap() {
+                emit(&format!(
+                    "AP `{}` 已启动，密码 `{}`\r\n浏览 http://{}/\r\n",
+                    crate::BIOS_AP_SSID,
+                    crate::BIOS_AP_PASS,
+                    crate::net::AP_GATEWAY
+                ));
+            } else {
+                emit("AP 启动失败\r\n");
             }
-            None => emit("setup 只在交互式 shell 里可用\r\n"),
-        },
+        }
         "format" => {
             fs::format();
             sh.cwd = 0;
