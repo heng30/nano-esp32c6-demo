@@ -52,35 +52,47 @@ static WIFI_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 /// 控制台输出环形缓冲，供远程 shell 拉取。
 static CONSOLE_RING: Mutex<RefCell<ConsoleRing>> = Mutex::new(RefCell::new(ConsoleRing::new()));
 
-/// 控制台输出环形缓冲，1 KB 足够一次命令的回显。
+/// 环形缓冲容量，必须是 2 的幂（用掩码取模）。
+const CONSOLE_RING_SIZE: usize = 1024;
+
+/// 控制台输出环形缓冲。
+///
+/// `head` 是**单调递增**的累计写入字节数，不是环形下标：`/c6wsh/stream` 的
+/// `tail` 游标就是这个计数，前端靠它做增量续拉。回绕发生在 u32 上，
+/// 4 GB 才转一圈，够用。
 struct ConsoleRing {
-    buf: [u8; 1024],
-    len: usize,
+    buf: [u8; CONSOLE_RING_SIZE],
+    /// 累计写入字节数，单调递增。
+    head: u32,
 }
 
 impl ConsoleRing {
     const fn new() -> Self {
         Self {
-            buf: [0; 1024],
-            len: 0,
+            buf: [0; CONSOLE_RING_SIZE],
+            head: 0,
         }
     }
 
     fn push(&mut self, data: &[u8]) {
         for &b in data {
-            if self.len == self.buf.len() {
-                self.buf.copy_within(1.., 0);
-                self.len -= 1;
-            }
-            self.buf[self.len] = b;
-            self.len += 1;
+            self.buf[(self.head as usize) & (CONSOLE_RING_SIZE - 1)] = b;
+            self.head = self.head.wrapping_add(1);
         }
     }
 
-    fn take(&mut self) -> String {
-        let s = String::from_utf8_lossy(&self.buf[..self.len]).into_owned();
-        self.len = 0;
-        s
+    /// 从 `tail` 游标读最多 `out.len()` 字节，返回 (实际字节数, 新游标)。
+    ///
+    /// 游标落在已滚出的区间时自动夹到最早可读位置，不会读出垃圾。
+    fn read_from(&self, tail: u32, out: &mut [u8]) -> (usize, u32) {
+        let head = self.head;
+        let earliest = head.saturating_sub(CONSOLE_RING_SIZE as u32);
+        let from = tail.clamp(earliest, head);
+        let n = ((head - from) as usize).min(out.len());
+        for (i, slot) in out[..n].iter_mut().enumerate() {
+            *slot = self.buf[(from as usize + i) & (CONSOLE_RING_SIZE - 1)];
+        }
+        (n, from + n as u32)
     }
 }
 
@@ -424,6 +436,9 @@ async fn http_task(stack: &'static Stack<'static>) {
 /// Web UI 请求重启后，等响应发完再真正重启。
 static REBOOT_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Web Shell 页面，来自上游 `web_ui/c6wsh.c` 的嵌入式 HTML。
+const C6WSH_HTML: &str = include_str!("web/c6wsh.html");
+
 /// 路由一条 HTTP 请求。
 async fn handle_request(raw: &[u8]) -> String {
     let text = String::from_utf8_lossy(raw);
@@ -463,9 +478,44 @@ async fn handle_request(raw: &[u8]) -> String {
             nvram::update(|c| c.bios_update_state = nvram::BiosUpdateState::Pending);
             http_ok("application/json", "{\"ok\":true}")
         }
+        ("GET", "/c6wsh") => http_ok("text/html; charset=utf-8", C6WSH_HTML),
+        ("GET", "/c6wsh/stream") => {
+            let head = critical_section::with(|cs| CONSOLE_RING.borrow_ref(cs).head);
+            // 带了 tail 就按游标续拉；缺省或落后超过整圈时退回最近 512 字节
+            let tail = match query_param(target, "tail").and_then(|s| s.parse::<u32>().ok()) {
+                Some(t) if head.saturating_sub(t) <= CONSOLE_RING_SIZE as u32 => t,
+                _ => head.saturating_sub(512),
+            };
+            let mut chunk = [0u8; 512];
+            let (n, new_tail) =
+                critical_section::with(|cs| CONSOLE_RING.borrow_ref(cs).read_from(tail, &mut chunk));
+            let body = String::from_utf8_lossy(&chunk[..n]).into_owned();
+            http_ok_hdr(
+                "text/plain; charset=utf-8",
+                &alloc::format!("X-Tail: {new_tail}\r\n"),
+                &body,
+            )
+        }
+        ("POST", "/c6wsh/exec") => {
+            let cmd = body.trim();
+            if cmd.is_empty() {
+                http_error(400, "BAD REQUEST")
+            } else {
+                // 命令输出直接进环形缓冲，前端靠 /c6wsh/stream 增量取回
+                let _ = shell::execute_capture(cmd);
+                http_ok("text/plain; charset=utf-8", "OK")
+            }
+        }
         ("GET", "/wsh") => {
             // 先取走积压的控制台输出，再执行命令并附上它的回显
-            let pending = critical_section::with(|cs| CONSOLE_RING.borrow_ref_mut(cs).take());
+            let mut chunk = [0u8; 512];
+            let head = critical_section::with(|cs| CONSOLE_RING.borrow_ref(cs).head);
+            let (n, _) = critical_section::with(|cs| {
+                CONSOLE_RING
+                    .borrow_ref(cs)
+                    .read_from(head.saturating_sub(512), &mut chunk)
+            });
+            let pending = String::from_utf8_lossy(&chunk[..n]).into_owned();
             let cmd = query_param(target, "cmd").unwrap_or_default();
             let output = if cmd.trim().is_empty() {
                 pending
@@ -518,6 +568,14 @@ fn percent_decode(s: &str) -> String {
 fn http_ok(content_type: &str, body: &str) -> String {
     alloc::format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
+        body.len()
+    )
+}
+
+/// 带自定义响应头的 200 响应。
+fn http_ok_hdr(content_type: &str, extra: &str, body: &str) -> String {
+    alloc::format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra}Content-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n{body}",
         body.len()
     )
 }

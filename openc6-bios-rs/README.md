@@ -76,7 +76,7 @@ bit 24..30      SPI Flash 总线
 | `sandbox` | `src/sandbox/` | 已移植：全局汇编 trap 向量表、`ecall` 分发、PMP arena、`setjmp`/`longjmp` 退出 |
 | `boot_manager` | `src/shell.rs`、`src/proc.rs` | shell 与页池/进程表已移植 |
 | `led_mgmt` | `src/led.rs` | 已移植，Aura 灯效走 embassy 任务 |
-| `wifi_mgmt`、`web_ui`、`pxe_boot` | `src/net.rs`、`src/pxe.rs` | AP/STA、BIOS Setup Web UI、`/wsh` 远程 shell、PXE 下载已移植；STA + DHCP + PXE 已在板上实测通过 |
+| `wifi_mgmt`、`web_ui`、`pxe_boot` | `src/net.rs`、`src/pxe.rs` | AP/STA、BIOS Setup Web UI、Web Shell（`/c6wsh` + `/c6wsh/stream?tail=N` 增量游标 + `/c6wsh/exec`）、PXE 下载已移植；STA + DHCP + PXE 已在板上实测通过 |
 | `power_mgmt` | `src/power.rs`、`src/me.rs` | 已移植：AI Tweaker 应用 + 自治调频（`me::update_governor`，按忙闲比三档、升频立即/降频保持 1 s） |
 | `management_engine`（LP-Core） | `src/me.rs`、`ulp/` | **部分**：LP 核已跑起来（心跳、电源键采集、喂狗停滞检出），检出后由 HP 侧执行复位；LP 侧直接触发复位未打通，见「已知缺口」 |
 

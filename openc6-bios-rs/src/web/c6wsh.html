@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html><head><meta charset='utf-8'>
+<title>c6wsh - OpenC6 Web Shell</title>
+<meta name='viewport' content='width=device-width, initial-scale=1'>
+<style>
+body{background:#0a0a0a;color:#00ff66;font-family:'Courier New',monospace;margin:0;padding:10px;display:flex;flex-direction:column;height:95vh;box-sizing:border-box}
+#hdr{border-bottom:1px solid #005522;padding-bottom:5px;margin-bottom:5px;display:flex;justify-content:space-between;font-size:0.85em;color:#88ffaa}
+#term{flex:1;background:#000000;border:1px solid #005522;padding:10px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;font-size:0.9em;line-height:1.3;box-shadow:inset 0 0 10px rgba(0,255,102,0.1)}
+#input-row{display:flex;margin-top:8px;background:#001100;border:1px solid #005522;padding:5px}
+#prompt{color:#ffff55;font-weight:bold;margin-right:8px;user-select:none}
+#cmd{flex:1;background:transparent;border:none;outline:none;color:#00ff66;font-family:'Courier New',monospace;font-size:1em;font-weight:bold}
+.btns{margin-top:5px;display:flex;gap:5px;flex-wrap:wrap}
+button{background:#002200;border:1px solid #005522;color:#00ff66;font-family:'Courier New',monospace;font-size:0.8em;padding:4px 8px;cursor:pointer;font-weight:bold}
+button:hover{background:#004400;color:#ffffff}
+#status{font-weight:bold}
+</style></head><body>
+<div id='hdr'>
+<span>OPENC6 REMOTE WEB SHELL [c6wsh v1.0]</span>
+<span id='status' style='color:#ffff55'>CONNECTING...</span>
+</div>
+<div id='term'></div>
+<div class='btns'>
+<button onclick="sendCmd('help')">HELP</button>
+<button onclick="sendCmd('mem')">MEM</button>
+<button onclick="sendCmd('top')">TOP</button>
+<button onclick="sendCmd('wifi status')">WIFI</button>
+<button onclick="sendCmd('ls')">LS</button>
+<button onclick="sendCmd('info')">INFO</button>
+<button onclick="clearTerm()">CLEAR</button>
+<button onclick="sendCmd('suspend')" style='color:#ffff55;border-color:#666600'>SUSPEND [Ctrl+X]</button>
+<button onclick="sendCmd('reboot')">REBOOT</button>
+<button onclick="sendCmd('poweroff')" style='color:#ff5555;border-color:#550000'>POWEROFF</button>
+</div>
+<div id='input-row'>
+<span id='prompt'>c6wsh /></span>
+<input type='text' id='cmd' autofocus autocomplete='off' spellcheck='false'>
+</div>
+<script>
+const term=document.getElementById('term');
+const cmdInput=document.getElementById('cmd');
+const statusElem=document.getElementById('status');
+let history=[];let histIdx=-1;
+let streamTail=-1;
+function clearTerm(){term.textContent='';}
+async function pollStream(){
+  let pollInterval = 500;
+  try{
+    const url=streamTail>=0?('/c6wsh/stream?tail='+streamTail):'/c6wsh/stream';
+    const res=await fetch(url);
+    if(res.ok){
+      statusElem.textContent='STREAM ACTIVE (ONLINE)';
+      statusElem.style.color='#00ff66';
+      const newTail=res.headers.get('X-Tail');
+      if(newTail!==null)streamTail=parseInt(newTail);
+      const text=await res.text();
+      if(text.length>0){
+        term.textContent+=text;
+        term.scrollTop=term.scrollHeight;
+        pollInterval = 80;
+      } else {
+        pollInterval = 500;
+      }
+    }
+  }catch(e){
+    statusElem.textContent='STREAM OFFLINE (RECONNECTING...)';
+    statusElem.style.color='#ff4444';
+    pollInterval = 2000;
+  }
+  setTimeout(pollStream, pollInterval);
+}
+async function sendCmd(text){
+  if(!text||!text.trim())return;
+  try{
+    await fetch('/c6wsh/exec',{method:'POST',headers:{'Content-Type':'text/plain'},body:text.trim()});
+  }catch(e){
+    term.textContent+='\r\n[c6wsh] Error: Command dispatch failed.\r\n';
+  }
+}
+cmdInput.addEventListener('keydown',(e)=>{
+  if(e.ctrlKey && (e.key === 'x' || e.key === 'X')){
+    e.preventDefault();
+    sendCmd('suspend');
+    return;
+  }
+  if(e.key==='Enter'){
+    const val=cmdInput.value.trim();
+    if(!val)return;
+    if(val==='clear'){clearTerm();cmdInput.value='';return;}
+    history.push(val);
+    histIdx=history.length;
+    sendCmd(val);
+    cmdInput.value='';
+  }else if(e.key==='ArrowUp'){
+    if(histIdx>0){histIdx--;cmdInput.value=history[histIdx];}
+  }else if(e.key==='ArrowDown'){
+    if(histIdx<history.length-1){histIdx++;cmdInput.value=history[histIdx];}else{histIdx=history.length;cmdInput.value='';}
+  }
+});
+window.onload=()=>{pollStream();cmdInput.focus();};
+</script></body></html>
