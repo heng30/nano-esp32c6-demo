@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "rainbow",
   "http-ping",
   "ble-server",
   "qapass-1602a-lcd",

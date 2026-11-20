@@ -15,6 +15,7 @@
 | `3461BS/` | 4 位数码管动态扫描（GPIO0–4 段选、GPIO10/11/18/19 位选） | |
 | `ILI9341-LCD/` | 240×320 屏，16 位 8080 并口 + `mipidsi`/`embedded-graphics`，占 18 根 GPIO | |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
+| `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
 | `ble-server/`、`ble-headset/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server` / `headset`（`[[bin]]` 指定）；带 `build.rs` 做 `linker_be_nice()` | `.cargo/config.toml` 里多一条 `build-std = ["core"]`，`rustflags` 里**没有** `-Tdefmt.x`/`-Tlinkall.x`（由 `build.rs` 的 `rustc-link-arg` 给） |
 | `esp32c6-top50/` | 抓下来做参考的上游仓库克隆 + 报告（`REPORT.md`、`BARE-CHIP-ONLY.md`） | **只读**，已 gitignore，不要改、不要当本仓代码提交 |
 | `openc6-bios-rs/` | 空目录，未开工 | |

@@ -1,0 +1,10 @@
+[package]
+name = "rainbow"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp-hal.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-hal-smartled.workspace = true
+smart-leds-trait.workspace = true
