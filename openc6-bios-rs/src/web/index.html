@@ -183,18 +183,18 @@
                 const res = await fetch('/api/sysinfo');
                 const hw = await res.json();
 
-                const nvs_total = hw.nvs_used_entries + hw.nvs_free_entries;
-                const nvs_percent = nvs_total > 0 ? Math.round((hw.nvs_used_entries / nvs_total) * 100) : 0;
+                const nvs_total = hw.nvs_used_bytes + hw.nvs_free_bytes;
+                const nvs_percent = nvs_total > 0 ? Math.round((hw.nvs_used_bytes / nvs_total) * 100) : 0;
                 const ram_used = hw.ram_total_kb - hw.ram_free_kb;
 
                 const tempClass = hw.cpu_temp_c >= 75 ? "temp-warning" : "highlight";
 
                 document.getElementById('sys-info').innerHTML = `
                     MAIN CORE: <span class="highlight">${hw.cpu_real_mhz} MHz</span> | TEMP: <span class="${tempClass}">${hw.cpu_temp_c}&deg;C</span><br>
-                    LP CORE (ME): <span class="highlight">ACTIVE (WDT & THERMAL GUARD)</span><br>
-                    SYSTEM RAM: <span class="highlight">${ram_used} KB</span> / ${hw.ram_total_kb} KB IN USE<br>
+                    LP CORE (ME): <span class="highlight">${hw.me_active ? "ACTIVE (WDT &amp; THERMAL GUARD)" : "OFFLINE"}</span><br>
+                    HEAP USED: <span class="highlight">${ram_used} KB</span> / ${hw.ram_total_kb} KB<br>
                     SPI FLASH: ${hw.flash_total_mb} MB ROM<br>
-                    NVRAM USAGE: ${hw.nvs_used_entries} / ${nvs_total} ENTRIES (${nvs_percent}%)
+                    NVRAM USAGE: ${hw.nvs_used_bytes} / ${nvs_total} BYTES (${nvs_percent}%)
                     <div class="storage-bar"><div class="storage-fill" style="width: ${nvs_percent}%;"></div></div>
                 `;
 

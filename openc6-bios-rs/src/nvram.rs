@@ -13,6 +13,8 @@ use crate::hal::flash;
 const MAGIC: u32 = 0x4F43_4E56;
 /// 配置块布局版本，字段变动时自增，旧版本自动回落到默认值。
 const VERSION: u32 = 1;
+/// 配置块在 flash 里的实际字节数，给 Web UI 算占用率用。
+pub const CONFIG_BYTES: usize = core::mem::size_of::<RawConfig>();
 
 /// 掉电后是否自动开机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, defmt::Format)]

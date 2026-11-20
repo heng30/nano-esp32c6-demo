@@ -176,12 +176,12 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                 sandbox::arena_size(),
                 cfg.zc6_swap_mode,
                 crate::net::ip_string(),
-                if crate::net::is_ap() {
-                    "AP beaconing"
-                } else if crate::net::is_connected() {
-                    "connected"
+                if crate::net::is_connected() {
+                    "STA+AP connected"
+                } else if crate::net::sta_present() {
+                    "STA+AP down"
                 } else {
-                    "down"
+                    "AP beaconing"
                 },
             ));
         }
@@ -282,23 +282,15 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
         "pxe" => emit("pxe 需要在交互式 shell 里执行\r\n"),
         "wifi" => match args.get(1).copied() {
             Some("status") => {
-                let ap = crate::net::is_ap();
                 emit(&format!(
-                    "mode   : {}\r\nip     : {}\r\nstate  : {}\r\n",
-                    if ap { "AP" } else { "STA" },
-                    // STA 未连接时栈里还留着上一轮的静态地址，别当成有效 IP 显示
-                    if ap || crate::net::is_connected() {
-                        crate::net::ip_string()
-                    } else {
-                        String::from("-")
-                    },
-                    // AP 模式下 STA 本来就不连接，别拿 STA 的连接标志报成 down
-                    if ap {
-                        "AP beaconing"
-                    } else if crate::net::is_connected() {
+                    "mode   : {}\r\nap ip  : {}\r\nsta ip : {}\r\nstate  : {}\r\n",
+                    if crate::net::sta_present() { "STA+AP" } else { "AP" },
+                    crate::net::ip_string(),
+                    crate::net::sta_ip_string(),
+                    if crate::net::is_connected() {
                         "connected"
                     } else {
-                        "down"
+                        "AP beaconing"
                     },
                 ));
             }
@@ -312,6 +304,8 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
                     Some(spawner) => {
                         if crate::net::init(spawner).is_none() {
                             emit("Wi-Fi 初始化失败\r\n");
+                        } else if !crate::net::ensure_sta(spawner) {
+                            emit("STA 接口创建失败\r\n");
                         } else {
                             emit(&format!("start_sta: {}\r\n", crate::net::start_sta()));
                         }
@@ -456,7 +450,7 @@ fn run(line: &str, sh: &mut Shell, mut capture: Option<&mut String>) {
             Some(spawner) => {
                 if crate::net::init(spawner).is_none() {
                     emit("Wi-Fi 初始化失败\r\n");
-                } else if crate::net::start_ap(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS) {
+                } else if crate::net::start_ap() {
                     emit(&format!(
                         "AP `{}` 已启动，密码 `{}`\r\n浏览 http://{}/\r\n",
                         crate::BIOS_AP_SSID,

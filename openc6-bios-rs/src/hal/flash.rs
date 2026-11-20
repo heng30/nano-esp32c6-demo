@@ -30,6 +30,10 @@ static OTA_PART: Mutex<RefCell<Option<Partition>>> = Mutex::new(RefCell::new(Non
 /// 芯片 flash 总容量（字节），`init` 后填充。
 static CHIP_SIZE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
+/// 分区表全部条目（标签 + 边界），`init` 后填充；未使用的槽位 `size` 为 0。
+static ALL_PARTS: Mutex<RefCell<[(&'static str, Partition); 6]>> =
+    Mutex::new(RefCell::new([("", Partition { offset: 0, size: 0 }); 6]));
+
 /// 初始化 flash 驱动并解析分区表。
 pub fn init(flash_peripheral: esp_hal::peripherals::FLASH<'static>) {
     let flash = FlashStorage::new(flash_peripheral);
@@ -50,16 +54,25 @@ pub fn init(flash_peripheral: esp_hal::peripherals::FLASH<'static>) {
     let mut fs_part = None;
     let mut nvs_part = None;
     let mut ota_part = None;
+    let mut all = [("", Partition { offset: 0, size: 0 }); 6];
+    let mut n = 0;
     for entry in table.iter() {
         let part = Partition {
             offset: entry.offset(),
             size: entry.len(),
         };
-        match entry.label_as_str() {
+        let Some(name) = partition_name(entry.label_as_str()) else {
+            continue;
+        };
+        match name {
             "openc6_fs" => fs_part = Some(part),
             "nvs" => nvs_part = Some(part),
             "ota_0" => ota_part = Some(part),
             _ => {}
+        }
+        if n < all.len() {
+            all[n] = (name, part);
+            n += 1;
         }
     }
 
@@ -75,6 +88,7 @@ pub fn init(flash_peripheral: esp_hal::peripherals::FLASH<'static>) {
         *FS_PART.borrow_ref_mut(cs) = fs_part;
         *NVS_PART.borrow_ref_mut(cs) = nvs_part;
         *OTA_PART.borrow_ref_mut(cs) = ota_part;
+        *ALL_PARTS.borrow_ref_mut(cs) = all;
     });
 
     match fs_part {
@@ -118,6 +132,24 @@ pub fn ota_write_sector(sector: u32, buf: &[u8]) -> Result<(), &'static str> {
 /// `nvs` 分区描述。
 pub fn nvs_partition() -> Option<Partition> {
     partition(&NVS_PART)
+}
+
+/// 把分区表里的标签当静态字符串用：标签来自读入的缓冲区，本身不是 `'static`。
+fn partition_name(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "nvs" => "nvs",
+        "otadata" => "otadata",
+        "phy_init" => "phy_init",
+        "bios_fw" => "bios_fw",
+        "ota_0" => "ota_0",
+        "openc6_fs" => "openc6_fs",
+        _ => return None,
+    })
+}
+
+/// 分区表里的全部条目，供 Web UI 展示。
+pub fn all_partitions() -> [(&'static str, Partition); 6] {
+    critical_section::with(|cs| *ALL_PARTS.borrow_ref(cs))
 }
 
 /// `openc6_fs` 分区是否可用。

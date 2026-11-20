@@ -44,9 +44,9 @@ const INDEX_HTML: &str = include_str!("web/index.html");
 // `Stack` 内含 `RefCell`，不是 `Sync`，所以不能放进 `Mutex`；
 // 它由 `StaticCell` 永久持有，这里只存指针再借回来。
 static STACK_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+static STA_STACK_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static CONTROLLER_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 static CONNECTED: AtomicBool = AtomicBool::new(false);
-static AP_MODE: AtomicBool = AtomicBool::new(false);
 static WIFI_READY: AtomicBool = AtomicBool::new(false);
 static WIFI_PTR: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 /// 控制台输出环形缓冲，供远程 shell 拉取。
@@ -111,6 +111,16 @@ fn stack() -> Option<&'static Stack<'static>> {
     }
 }
 
+fn sta_stack() -> Option<&'static Stack<'static>> {
+    let p = STA_STACK_PTR.load(Ordering::Acquire);
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: 同 `stack`。
+        Some(unsafe { &*(p as *const Stack<'static>) })
+    }
+}
+
 fn controller() -> Option<&'static mut WifiController<'static>> {
     let p = CONTROLLER_PTR.load(Ordering::Acquire);
     if p.is_null() {
@@ -131,8 +141,9 @@ pub fn set_peripheral(wifi: esp_hal::peripherals::WIFI<'static>) {
 
 /// 初始化 Wi-Fi 控制器与 embassy-net 协议栈。
 ///
-/// 初始配置按 NVRAM 决定：有 SSID 就起 STA，否则起 AP Setup 模式。
-/// 已初始化过时直接返回现有协议栈。
+/// AP 与 STA 共存：Setup 的 Web UI 必须随时能连，不能因为存了 STA 凭据就消失。
+/// 因此 AP 侧（静态网关 + DHCP 服务端）永远建；有 SSID 时再叠一个 STA 接口。
+/// 已初始化过时直接返回现有 AP 协议栈。
 pub fn init(spawner: Spawner) -> Option<&'static Stack<'static>> {
     if let Some(stack) = stack() {
         return Some(stack);
@@ -146,13 +157,16 @@ pub fn init(spawner: Spawner) -> Option<&'static Stack<'static>> {
     };
 
     let cfg = nvram::get();
+    let has_sta = !cfg.ssid_str().is_empty();
 
-    let initial = if cfg.ssid_str().is_empty() {
-        ap_config("BIOS_SETUP_C6", "12345678")
+    let initial = if has_sta {
+        Config::AccessPointStation(
+            sta_config(cfg.ssid_str(), cfg.pass_str()),
+            ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS),
+        )
     } else {
-        sta_config(cfg.ssid_str(), cfg.pass_str())
+        Config::AccessPoint(ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS))
     };
-    let ap_mode = cfg.ssid_str().is_empty();
 
     let mut controller = WifiController::new(
         wifi,
@@ -164,124 +178,140 @@ pub fn init(spawner: Spawner) -> Option<&'static Stack<'static>> {
     // 默认发射功率偏保守，这里拉到最大。
     let _ = controller.set_max_tx_power(20);
 
-    let device = if ap_mode {
-        Interface::access_point()
-    } else {
-        Interface::station()
-    };
+    let gw = Ipv4Addr::from_str(AP_GATEWAY).unwrap_or(Ipv4Addr::new(192, 168, 4, 1));
+    let rng = esp_hal::rng::Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
 
-    let net_config = if ap_mode {
-        let gw = Ipv4Addr::from_str(AP_GATEWAY).unwrap_or(Ipv4Addr::new(192, 168, 4, 1));
+    static AP_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+    let (ap, ap_runner) = embassy_net::new(
+        Interface::try_access_point()?,
         embassy_net::Config::ipv4_static(StaticConfigV4 {
             address: Ipv4Cidr::new(gw, 24),
             gateway: Some(gw),
             dns_servers: Default::default(),
-        })
-    } else {
-        embassy_net::Config::dhcpv4(Default::default())
-    };
-
-    static RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
-    let rng = esp_hal::rng::Rng::new();
-    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
-    let (stack, runner) = embassy_net::new(
-        device,
-        net_config,
-        RESOURCES.init(StackResources::new()),
+        }),
+        AP_RESOURCES.init(StackResources::new()),
         seed,
     );
-
-    let stack: &'static Stack<'static> = {
+    let ap: &'static Stack<'static> = {
         static S: StaticCell<Stack<'static>> = StaticCell::new();
-        S.init(stack)
+        S.init(ap)
     };
+    STACK_PTR.store(ap as *const _ as *mut (), Ordering::Release);
+
+    if has_sta {
+        spawn_sta(spawner, seed)?;
+    }
 
     let controller: &'static mut WifiController<'static> = {
         static C: StaticCell<WifiController<'static>> = StaticCell::new();
         C.init(controller)
     };
-
-    STACK_PTR.store(stack as *const _ as *mut (), Ordering::Release);
     CONTROLLER_PTR.store(controller as *mut _ as *mut (), Ordering::Release);
-    AP_MODE.store(ap_mode, Ordering::Release);
 
-    spawner.spawn(net_task(runner).unwrap());
+    // 控制台输出无条件镜像进环形缓冲：Web Shell 的输出去靠它，
+    // 不能只在 STA 连上时才装，否则 AP 模式下 `/c6wsh` 永远是空白。
+    console::set_tap(Some(console_tap));
+
+    spawner.spawn(net_task(ap_runner).unwrap());
     spawner.spawn(wifi_task().unwrap());
-    spawner.spawn(http_task(stack).unwrap());
+    spawner.spawn(http_task(ap).unwrap());
+    spawner.spawn(dhcp_task(ap, gw).unwrap());
 
-    Some(stack)
+    Some(ap)
 }
 
-fn ap_config(ssid: &str, pass: &str) -> Config {
-    let mut ssid_buf = [0u8; 32];
-    let n = ssid.len().min(31);
-    ssid_buf[..n].copy_from_slice(&ssid.as_bytes()[..n]);
-    let mut pass_buf = [0u8; 64];
-    let m = pass.len().min(63);
-    pass_buf[..m].copy_from_slice(&pass.as_bytes()[..m]);
+/// 建 STA 接口并挂上自带的 runner / HTTP 任务。
+fn spawn_sta(spawner: Spawner, seed: u64) -> Option<&'static Stack<'static>> {
+    static STA_RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
+    let (sta, sta_runner) = embassy_net::new(
+        Interface::try_station()?,
+        embassy_net::Config::dhcpv4(Default::default()),
+        STA_RESOURCES.init(StackResources::new()),
+        seed ^ 1,
+    );
+    let sta: &'static Stack<'static> = {
+        static S: StaticCell<Stack<'static>> = StaticCell::new();
+        S.init(sta)
+    };
+    STA_STACK_PTR.store(sta as *const _ as *mut (), Ordering::Release);
 
-    Config::AccessPoint(
-        AccessPointConfig::default()
-            .with_ssid(ssid_buf[..n].try_into().unwrap_or_default())
-            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                pass_buf[..m].try_into().unwrap_or_default(),
-            )),
-    )
+    spawner.spawn(net_task_sta(sta_runner).unwrap());
+    spawner.spawn(http_task_sta(sta).unwrap());
+    Some(sta)
 }
 
-fn sta_config(ssid: &str, pass: &str) -> Config {
-    let mut ssid_buf = [0u8; 32];
-    let n = ssid.len().min(31);
-    ssid_buf[..n].copy_from_slice(&ssid.as_bytes()[..n]);
-    let mut pass_buf = [0u8; 64];
-    let m = pass.len().min(63);
-    pass_buf[..m].copy_from_slice(&pass.as_bytes()[..m]);
-
-    Config::Station(
-        StationConfig::default()
-            // 弱链路下关联经常超时，默认重试次数不够
-            .with_failure_retry_cnt(10)
-            .with_ssid(ssid_buf[..n].try_into().unwrap_or_default())
-            .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
-                pass_buf[..m].try_into().unwrap_or_default(),
-            )),
-    )
-}
-
-/// 切到 AP 模式。
-pub fn start_ap(ssid: &str, pass: &str) -> bool {
-    let cfg = ap_config(ssid, pass);
-    let ok = controller().is_some_and(|c| c.set_config(&cfg).is_ok());
-    if ok {
-        AP_MODE.store(true, Ordering::Release);
+/// 补建 STA 接口：开机时没凭据就只建了 AP，`wifi connect` 之后得能补上。
+pub fn ensure_sta(spawner: Spawner) -> bool {
+    if sta_present() {
+        return true;
     }
-    ok
+    let rng = esp_hal::rng::Rng::new();
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+    spawn_sta(spawner, seed).is_some()
 }
 
-/// 切到 STA 模式并用 NVRAM 里的凭据连接。
+fn ap_config(ssid: &str, pass: &str) -> AccessPointConfig {
+    let mut ssid_buf = [0u8; 32];
+    let n = ssid.len().min(31);
+    ssid_buf[..n].copy_from_slice(&ssid.as_bytes()[..n]);
+    let mut pass_buf = [0u8; 64];
+    let m = pass.len().min(63);
+    pass_buf[..m].copy_from_slice(&pass.as_bytes()[..m]);
+
+    AccessPointConfig::default()
+        .with_ssid(ssid_buf[..n].try_into().unwrap_or_default())
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            pass_buf[..m].try_into().unwrap_or_default(),
+        ))
+}
+
+fn sta_config(ssid: &str, pass: &str) -> StationConfig {
+    let mut ssid_buf = [0u8; 32];
+    let n = ssid.len().min(31);
+    ssid_buf[..n].copy_from_slice(&ssid.as_bytes()[..n]);
+    let mut pass_buf = [0u8; 64];
+    let m = pass.len().min(63);
+    pass_buf[..m].copy_from_slice(&pass.as_bytes()[..m]);
+
+    StationConfig::default()
+        // 弱链路下关联经常超时，默认重试次数不够
+        .with_failure_retry_cnt(10)
+        .with_ssid(ssid_buf[..n].try_into().unwrap_or_default())
+        .with_authentication(AuthenticationMethodConfig::Wpa2Personal(
+            pass_buf[..m].try_into().unwrap_or_default(),
+        ))
+}
+
+/// 确保 AP 在广播（AP 常驻，`setup` 只是重新确认一次）。
+pub fn start_ap() -> bool {
+    let cfg = nvram::get();
+    let ap = ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS);
+    let next = if cfg.ssid_str().is_empty() {
+        Config::AccessPoint(ap)
+    } else {
+        Config::AccessPointStation(sta_config(cfg.ssid_str(), cfg.pass_str()), ap)
+    };
+    controller().is_some_and(|c| c.set_config(&next).is_ok())
+}
+
+/// 带上 STA 重新下发配置，`wifi connect` 与开机自动联网都走这里。
 pub fn start_sta() -> bool {
     let cfg = nvram::get();
     if cfg.ssid_str().is_empty() {
         return false;
     }
-    let sta = sta_config(cfg.ssid_str(), cfg.pass_str());
-    let ok = controller().is_some_and(|c| c.set_config(&sta).is_ok());
-    if ok {
-        AP_MODE.store(false, Ordering::Release);
-    }
-    ok
+    let next = Config::AccessPointStation(
+        sta_config(cfg.ssid_str(), cfg.pass_str()),
+        ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS),
+    );
+    controller().is_some_and(|c| c.set_config(&next).is_ok())
 }
 
-/// 退出 AP 模式，回到未连接的 STA。
-///
-/// 驱动不允许 AP-only 模式下扫描，所以 `wifi disconnect` 必须真的把模式切回去，
-/// 否则 `wifi scan` 会一直卡在「AP 模式不支持扫描」。
+/// 只关 STA、保留 AP：`wifi disconnect` 清掉凭据后还要能从 AP 重新配网。
 pub fn stop_ap() {
-    let switched = controller()
-        .is_some_and(|c| c.set_config(&Config::Station(StationConfig::default())).is_ok());
-    if switched {
-        AP_MODE.store(false, Ordering::Release);
-    }
+    let ap = ap_config(crate::BIOS_AP_SSID, crate::BIOS_AP_PASS);
+    let _ = controller().is_some_and(|c| c.set_config(&Config::AccessPoint(ap)).is_ok());
 }
 
 /// STA 是否已经拿到 IP。
@@ -312,14 +342,22 @@ pub fn ip_string() -> String {
         .unwrap_or_else(|| "0.0.0.0".into())
 }
 
-/// 当前模式是否为 AP。
 /// 协议栈是否已经初始化过。
 pub fn stack_ptr_is_null() -> bool {
     STACK_PTR.load(Ordering::Acquire).is_null()
 }
 
-pub fn is_ap() -> bool {
-    AP_MODE.load(Ordering::Acquire)
+/// 是否配置了 STA 接口（NVRAM 里有凭据）。
+pub fn sta_present() -> bool {
+    !STA_STACK_PTR.load(Ordering::Acquire).is_null()
+}
+
+/// STA 侧拿到的地址；未连接时返回 `-`。
+pub fn sta_ip_string() -> String {
+    sta_stack()
+        .and_then(|s| s.config_v4())
+        .map(|c| alloc::format!("{}", c.address.address()))
+        .unwrap_or_else(|| "-".into())
 }
 
 /// 扫描周边 AP 并打印结果。
@@ -327,8 +365,8 @@ pub fn is_ap() -> bool {
 /// `scan_async` 是异步的，只能从异步的 `repl` 里调；同步的 `run()` 分发不到这里。
 /// AP-only 模式下驱动不支持扫描，提前挡掉给个明确提示。
 pub async fn scan_print() {
-    if is_ap() {
-        console::print("wifi scan: AP 模式下不支持扫描，先 wifi disconnect\r\n");
+    if !sta_present() {
+        console::print("wifi scan: 只有 AP 接口时驱动不支持扫描，先 wifi connect 配好 STA\r\n");
         return;
     }
     let Some(ctrl) = controller() else {
@@ -362,9 +400,53 @@ async fn net_task(mut runner: Runner<'static, Interface>) {
 }
 
 #[embassy_executor::task]
+async fn net_task_sta(mut runner: Runner<'static, Interface>) {
+    runner.run().await;
+}
+
+/// 给连上 AP 的设备分配地址。没有它客户端关联成功也会报「IP 配置失败」。
+#[embassy_executor::task]
+async fn dhcp_task(stack: &'static Stack<'static>, gw: Ipv4Addr) {
+    use edge_dhcp::{
+        io::{self, DEFAULT_SERVER_PORT},
+        server::{Server, ServerOptions},
+    };
+    use edge_nal::UdpBind;
+    use edge_nal_embassy::{Udp, UdpBuffers};
+
+    let mut buf = [0u8; 1500];
+    let mut gw_buf = [Ipv4Addr::UNSPECIFIED];
+
+    let buffers = UdpBuffers::<3, 1024, 1024, 10>::new();
+    let unbound = Udp::new(*stack, &buffers);
+    let Ok(mut socket) = unbound
+        .bind(core::net::SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            DEFAULT_SERVER_PORT,
+        )))
+        .await
+    else {
+        console::print("[NET] DHCP 服务端绑定失败，客户端将拿不到地址\r\n");
+        return;
+    };
+    console::print("[NET] DHCP 服务端已启动\r\n");
+
+    loop {
+        let _ = io::server::run(
+            &mut Server::<_, 64>::new_with_et(gw),
+            &ServerOptions::new(gw, Some(&mut gw_buf)),
+            &mut socket,
+            &mut buf,
+        )
+        .await;
+        embassy_time::Timer::after(Duration::from_millis(500)).await;
+    }
+}
+
+#[embassy_executor::task]
 async fn wifi_task() {
     loop {
-        if !is_ap() && !CONNECTED.load(Ordering::Acquire) {
+        if sta_present() && !CONNECTED.load(Ordering::Acquire) {
             if let Some(c) = controller() {
                 match c.connect_async().await {
                     Ok(_) => defmt::info!("[NET] 关联成功"),
@@ -384,6 +466,16 @@ async fn wifi_task() {
 /// HTTP 主循环：串行处理一条连接，够 BIOS Setup 这种低频交互用。
 #[embassy_executor::task]
 async fn http_task(stack: &'static Stack<'static>) {
+    serve_http(stack).await;
+}
+
+/// STA 侧的同一套页面：连上路由器后也能用板子拿到的局域网地址访问。
+#[embassy_executor::task]
+async fn http_task_sta(stack: &'static Stack<'static>) {
+    serve_http(stack).await;
+}
+
+async fn serve_http(stack: &'static Stack<'static>) -> ! {
     let mut rx_buf = [0u8; TCP_BUF];
     let mut tx_buf = [0u8; TCP_BUF];
 
@@ -402,14 +494,19 @@ async fn http_task(stack: &'static Stack<'static>) {
             continue;
         }
 
-        let mut request = [0u8; 1024];
+        let mut request = [0u8; TCP_BUF];
         let mut len = 0usize;
+        let mut header_end = None;
         loop {
             match socket.read(&mut request[len..]).await {
                 Ok(0) => break,
                 Ok(n) => {
                     len += n;
-                    if request[..len].windows(4).any(|w| w == b"\r\n\r\n") || len == request.len() {
+                    if let Some(p) = request[..len].windows(4).position(|w| w == b"\r\n\r\n") {
+                        header_end = Some(p + 4);
+                        break;
+                    }
+                    if len == request.len() {
                         break;
                     }
                 }
@@ -417,8 +514,29 @@ async fn http_task(stack: &'static Stack<'static>) {
             }
         }
 
+        // 请求体必须读干净再关连接：内核发现接收缓冲还有未读数据会发 RST，
+        // 浏览器侧 `fetch` 直接抛异常，前端只能报「Command dispatch failed」。
+        if let Some(he) = header_end {
+            let want = (he + content_length(&request[..he])).min(request.len());
+            while len < want {
+                match socket.read(&mut request[len..want]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => len += n,
+                }
+            }
+        }
+
         let response = handle_request(&request[..len]).await;
-        let _ = socket.write(response.as_bytes()).await;
+        // tx 缓冲只有 TCP_BUF，一次 `write` 只吃得下这么多，剩下的必须续写。
+        // 否则大页面（`/c6wsh` 4.2 KB、`/` 15.6 KB）被截断，浏览器卡在等剩下的字节。
+        let body = response.as_bytes();
+        let mut sent = 0;
+        while sent < body.len() {
+            match socket.write(&body[sent..]).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sent += n,
+            }
+        }
         let _ = socket.flush().await;
         socket.close();
 
@@ -438,6 +556,19 @@ static REBOOT_PENDING: core::sync::atomic::AtomicBool = core::sync::atomic::Atom
 
 /// Web Shell 页面，来自上游 `web_ui/c6wsh.c` 的嵌入式 HTML。
 const C6WSH_HTML: &str = include_str!("web/c6wsh.html");
+
+/// 从请求头里取 `Content-Length`，没有就按 0 算。
+fn content_length(head: &[u8]) -> usize {
+    let text = String::from_utf8_lossy(head);
+    for line in text.lines() {
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("content-length")
+        {
+            return v.trim().parse().unwrap_or(0);
+        }
+    }
+    0
+}
 
 /// 路由一条 HTTP 请求。
 async fn handle_request(raw: &[u8]) -> String {
@@ -625,9 +756,10 @@ fn settings_json() -> String {
 fn sysinfo_json() -> String {
     let parts = partition_json();
     alloc::format!(
-        "{{\"cpu_real_mhz\":{},\"cpu_temp_c\":{},\"nvs_used_entries\":{},\"nvs_free_entries\":{},\"ram_total_kb\":{},\"ram_free_kb\":{},\"flash_total_mb\":{},\"partitions\":[{}]}}",
+        "{{\"cpu_real_mhz\":{},\"cpu_temp_c\":{},\"me_active\":{},\"nvs_used_bytes\":{},\"nvs_free_bytes\":{},\"ram_total_kb\":{},\"ram_free_kb\":{},\"flash_total_mb\":{},\"partitions\":[{}]}}",
         crate::hal::clock::get_cpu_mhz(),
         crate::me::temperature_c(),
+        crate::me::is_active() as u8,
         nvs_used(),
         nvs_total() - nvs_used(),
         (esp_alloc::HEAP.used() + esp_alloc::HEAP.free()) / 1024,
@@ -640,34 +772,32 @@ fn sysinfo_json() -> String {
 /// 分区表 JSON 片段。
 fn partition_json() -> String {
     let mut out = String::new();
-    for (name, part) in [
-        ("openc6_fs", flash::fs_partition()),
-        ("nvs", flash::nvs_partition()),
-    ] {
-        if let Some(p) = part {
-            if !out.is_empty() {
-                out.push(',');
-            }
-            let _ = write!(
-                out,
-                "{{\"name\":\"{}\",\"offset\":{},\"size_kb\":{}}}",
-                name,
-                p.offset,
-                p.size / 1024
-            );
+    for (name, p) in flash::all_partitions() {
+        if p.size == 0 {
+            continue;
         }
+        if !out.is_empty() {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"name\":\"{}\",\"offset\":{},\"size_kb\":{}}}",
+            name,
+            p.offset,
+            p.size / 1024
+        );
     }
     out
 }
 
 /// NVRAM 已用条目数（固定布局只有 1 块）。
 fn nvs_used() -> u32 {
-    1
+    nvram::CONFIG_BYTES as u32
 }
 
-/// NVRAM 总条目数。
+/// NVRAM 分区总容量（字节）。
 fn nvs_total() -> u32 {
-    1
+    flash::nvs_partition().map_or(0, |p| p.size)
 }
 
 /// 解析并落盘 Web UI 提交的设置。
@@ -779,7 +909,7 @@ fn json_str(body: &str, key: &str) -> Option<String> {
 ///
 /// shortcut: 只支持明文 HTTP + `Content-Length`，不支持 chunked 和重定向；换 HTTPS 源时重写。
 pub async fn http_download(url: &str) -> Option<Vec<u8>> {
-    let stack = stack()?;
+    let stack = sta_stack()?;
     let (host, port, path) = parse_url(url)?;
 
     // 字面量 IP 直接解析，别丢给 DNS——DNS 会被拖到超时才失败

@@ -239,7 +239,7 @@ async fn enter_setup(spawner: Spawner) -> ! {
     }
 
     if net::init(spawner).is_some() {
-        net::start_ap(BIOS_AP_SSID, BIOS_AP_PASS);
+        net::start_ap();
         hal::console::print(&alloc::format!(
             "[SETUP] AP `{BIOS_AP_SSID}` 已启动，浏览 http://{}/\r\n",
             net::AP_GATEWAY
