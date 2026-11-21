@@ -14,6 +14,7 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `ILI9341-LCD/` | 240×320 ILI9341 屏，16 位 8080 并口（18 根 GPIO），`mipidsi` + `embedded-graphics` | [链接](ILI9341-LCD/README.md) |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | [链接](qapass-1602a-lcd/README.md) |
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
+| `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |
 | `ble-led/` | BLE 控制的板载 RGB 灯：手机写 `on`/`off`，`trouble-host` + `esp-hal-smartled` | [链接](ble-led/README.md) |
 
 `esp32c6-top50/`（上游仓库克隆与报告）和 `openc6-bios-rs/`（未开工）已 exclude，不参与构建。

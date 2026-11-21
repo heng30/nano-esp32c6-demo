@@ -1,0 +1,14 @@
+[target.'cfg(target_arch = "riscv32")']
+runner = "probe-rs run --chip=esp32c6"
+rustflags = [
+  "-C", "link-arg=-Tdefmt.x",
+  "-C", "link-arg=-Tlinkall.x",
+  "-C", "force-frame-pointers",
+]
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+# defmt 1.x 在 DEFMT_LOG 未设置时默认只保留 error 级别，info! 会被编译成空操作。
+[env]
+DEFMT_LOG = "info"

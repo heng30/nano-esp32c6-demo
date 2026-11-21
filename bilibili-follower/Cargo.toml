@@ -1,0 +1,24 @@
+[package]
+name = "bilibili-follower"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+defmt.workspace = true
+static_cell.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+
+embassy-time.workspace = true
+embassy-executor.workspace = true
+embassy-net.workspace = true
+embedded-io-async.workspace = true
+
+esp-hal.workspace = true
+esp-alloc.workspace = true
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+esp-radio = { workspace = true, features = ["wifi"] }
+esp-bootloader-esp-idf.workspace = true
+
+der.workspace = true
+embedded-tls.workspace = true

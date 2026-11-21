@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "rainbow",
   "http-ping",
+  "bilibili-follower",
   "ble-server",
   "ble-led",
   "qapass-1602a-lcd",
@@ -37,6 +38,10 @@ critical-section = { version = "1.2", default-features = false }
 mipidsi = { version = "0.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
+embedded-io-async = { version = "0.7", default-features = false }
+embedded-tls = { version = "0.19", default-features = false, features = [
+  "rsa",
+] }
 
 defmt = { version = "1.2", default-features = false }
 rtt-target = { version = "0.6", default-features = false, features = ["defmt"] }
@@ -100,7 +105,6 @@ esp-hal-smartled = { version = "0.18", default-features = false, features = [
 ] }
 
 edge-nal = { version = "0.7", default-features = false }
-embedded-io-async = { version = "0.7", default-features = false }
 edge-dhcp = { version = "0.8", default-features = false, features = ["io"] }
 edge-nal-embassy = { version = "0.9", default-features = false, features = [
   "tcp",
@@ -116,4 +120,13 @@ trouble-host = { version = "0.8", default-features = false, features = [
   "security",
   "peripheral",
   "default-packet-pool",
+] }
+
+# embedded-tls 声明的 der 版本是 `0.8.0-rc.2`，解析器会真的挑到那个 rc，而它拉来的 der_derive
+# 是 0.8.0 正式版，两边 API 对不上；显式钉一个正式版让 der / der_derive 一致。
+der = { version = "0.8.3", default-features = false, features = [
+  "derive",
+  "oid",
+  "time",
+  "heapless",
 ] }

@@ -12,6 +12,7 @@
 | 目录 | 内容 | 注意 |
 |---|---|---|
 | `http-ping/` | 本目录：起 WiFi AP（`esp32c6` / `12345678` / 网关 `192.168.2.1`），80 端口响应 `GET /ping` 回 `pong` 并闪 RGB LED（GPIO8），内置 DHCP 服务端 | `curl http://192.168.2.1/ping` 验证；本 crate 自带 `#[panic_handler]` |
+| `bilibili-follower/` | 连 WiFi（STA，DHCP）每分钟走 HTTPS 查 B 站粉丝数并打日志：`embedded-tls 0.19`（`rsa` 特性）+ 手写 `GET`，无 `reqwless` | 根 `Cargo.toml` 里 `der` 的钉版是必须的（见注释）；证书链不校验 |
 | `3461BS/` | 4 位数码管动态扫描（GPIO0–4 段选、GPIO10/11/18/19 位选） | |
 | `ILI9341-LCD/` | 240×320 屏，16 位 8080 并口 + `mipidsi`/`embedded-graphics`，占 18 根 GPIO | |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
