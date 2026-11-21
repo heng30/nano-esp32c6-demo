@@ -1,0 +1,56 @@
+[package]
+name = "minio-rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+minio-rs-core = { path = "core" }
+embedded-graphics.workspace = true
+embedded-sdmmc.workspace = true
+embedded-hal-bus.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+static_cell.workspace = true
+critical-section.workspace = true
+
+esp-hal.workspace = true
+esp-alloc.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-storage.workspace = true
+esp-hal-smartled.workspace = true
+smart-leds-trait.workspace = true
+
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+# esp-radio 的 wifi / ieee802154 是互斥的两种固件形态（build.rs 强制），
+# 由下面的 crate 级特性选择，不要同时启用
+esp-radio = { workspace = true }
+
+embassy-futures.workspace = true
+embassy-sync.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+embassy-net = { workspace = true, optional = true }
+embedded-io-async.workspace = true
+edge-dhcp = { workspace = true, optional = true }
+edge-nal = { workspace = true, optional = true }
+edge-nal-embassy = { workspace = true, optional = true }
+
+trouble-host = { workspace = true, optional = true }
+
+[features]
+default = ["wifi-build"]
+# WiFi 固件形态：AP / captive portal / wardriving 可用，802.15.4 菜单不可用
+wifi-build = [
+  "esp-radio/wifi",
+  "esp-radio/ble",
+  "esp-radio/coex",
+  "dep:edge-dhcp",
+  "dep:edge-nal",
+  "dep:edge-nal-embassy",
+  "dep:embassy-net",
+  "dep:trouble-host",
+]
+# 802.15.4 固件形态：嗅探/欺骗可用，WiFi 菜单不可用；esp-radio 编译期禁止与 WiFi 共存
+# 构建：cargo build --no-default-features --features ieee154-build
+ieee154-build = ["esp-radio/ieee802154"]

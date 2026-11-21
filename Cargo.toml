@@ -8,6 +8,8 @@ members = [
   "ble-led",
   "qapass-1602a-lcd",
   "openc6-bios-rs",
+  "minio-rs",
+  "minio-rs/core",
 
   # 没有测试
   "3461BS",
@@ -37,10 +39,14 @@ critical-section = { version = "1.2", default-features = false }
 
 mipidsi = { version = "0.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
+embedded-hal-bus = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
 embedded-tls = { version = "0.19", default-features = false, features = [
   "rsa",
+] }
+embedded-sdmmc = { version = "0.10", default-features = false, features = [
+  "defmt-log",
 ] }
 
 defmt = { version = "1.2", default-features = false }
@@ -115,6 +121,7 @@ edge-nal-embassy = { version = "0.9", default-features = false, features = [
 
 trouble-host = { version = "0.8", default-features = false, features = [
   "gatt",
+  "scan",
   "defmt",
   "derive",
   "security",

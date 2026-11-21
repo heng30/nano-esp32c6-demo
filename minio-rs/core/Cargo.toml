@@ -1,0 +1,7 @@
+[package]
+name = "minio-rs-core"
+version.workspace = true
+edition.workspace = true
+
+# 零依赖纯逻辑包：菜单树、帧解析等；无 esp 依赖，宿主 cargo test 直接跑
+[dependencies]

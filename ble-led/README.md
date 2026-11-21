@@ -40,8 +40,9 @@ cargo run   # 构建 + 烧录 + RTT 日志（需探针）
 
 断言四项：写 `on` 读回 `on`、写 `off` 读回 `off`、非法值被拒、被拒后状态不变。
 脚本靠主机 BlueZ 的 `busctl` 驱动，不依赖 `python-dbus`。两个坑写在脚本注释里：
-发现时用 `SetDiscoveryFilter Transport=le` 才能抓到只广播 LE 的外设；设备不在 BlueZ
-缓存时 `bluetoothctl` 跨进程扫描会丢对象，所以全程走 D-Bus。
+busctl 直连 `Adapter1.StartDiscovery` 在本机多次 30 秒零命中，所以扫描这步交给后台的
+`bluetoothctl --timeout 30 scan on`；扫到设备必须趁扫描还在跑立刻 `Connect`，
+bluez 会回收只被扫到的临时设备对象，提前停扫描就 Connect 不到。
 
 ## 说明
 
