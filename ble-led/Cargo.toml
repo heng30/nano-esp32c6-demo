@@ -1,0 +1,21 @@
+[package]
+edition.workspace = true
+name = "ble-led"
+version.workspace = true
+
+[dependencies]
+defmt.workspace = true
+esp-alloc.workspace = true
+static_cell.workspace = true
+rtt-target.workspace = true
+embassy-time.workspace = true
+embassy-sync.workspace = true
+embassy-executor.workspace = true
+panic-rtt-target.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-hal.workspace = true
+esp-hal-smartled.workspace = true
+smart-leds-trait.workspace = true
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+esp-radio = { workspace = true, features = ["ble"] }
+trouble-host.workspace = true

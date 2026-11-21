@@ -4,6 +4,7 @@ members = [
   "rainbow",
   "http-ping",
   "ble-server",
+  "ble-led",
   "qapass-1602a-lcd",
   "openc6-bios-rs",
 

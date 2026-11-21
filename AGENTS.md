@@ -16,7 +16,8 @@
 | `ILI9341-LCD/` | 240×320 屏，16 位 8080 并口 + `mipidsi`/`embedded-graphics`，占 18 根 GPIO | |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
-| `ble-server/`、`ble-headset/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server` / `headset`（`[[bin]]` 指定）；带 `build.rs` 做 `linker_be_nice()` | `.cargo/config.toml` 里多一条 `build-std = ["core"]`，`rustflags` 里**没有** `-Tdefmt.x`/`-Tlinkall.x`（由 `build.rs` 的 `rustc-link-arg` 给） |
+| `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |
+| `ble-led/` | BLE 控制板载 WS2812B：SIG `0x1815`/`0x2BE2` 特性写 ASCII `on`/`off`，`trouble-host` + `esp-hal-smartled` | 同上：`build-std` + `rustflags` 给链接参数，无 `build.rs`；接线见 `ble-led/README.md` |
 | `esp32c6-top50/` | 抓下来做参考的上游仓库克隆 + 报告（`REPORT.md`、`BARE-CHIP-ONLY.md`） | **只读**，已 gitignore，不要改、不要当本仓代码提交 |
 | `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall` 系统调用、日志式环形 flash 文件系统、ZC6 压缩、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | 自带全局汇编 trap 向量表（`.rwtext`，必须 IRAM）；`src/web/index.html` 直接来自上游；`Rompass__openc6-bios` 是指向 `esp32c6-top50/` 的只读符号链接 |
 
@@ -51,6 +52,7 @@
 - **release 下要 `debug = 2` 才有日志位置**：否则 defmt 输出 `<invalid location: defmt frame-index: N>`。
   根 `[profile.release]` 已带 `debug = 2`，不要删。
 - **链接脚本顺序**：`rustflags` 里 `-Tdefmt.x` 必须在 `-Tlinkall.x` **之前**，`linkall.x` 最后。
+- **不要用 `build.rs` 传链接参数**：一律写在各目录 `.cargo/config.toml` 的 `rustflags`（`ble-server`、`ble-led` 已按此改）。
 - **`#[panic_handler]` 只能有一份**：`http-ping` 自己实现了（`defmt::error!` + `software_reset`），
   再加 `panic-rtt-target` 会重复定义符号，链接失败。
 - 入口两种写法：`http-ping` 用 `#[esp_hal::main]` + 手动 `esp_rtos::start(timg0.timer0, ...)`；
@@ -85,7 +87,9 @@
 
 - `#![no_std]` + `#![no_main]`，`edition = "2024"`；有 `alloc` 需求先 `extern crate alloc;` 并
   `esp_alloc::heap_allocator!(size: ...)`。
-- **注释用中文**；`struct`/`enum` 及其字段与变体、`const`/`static`、`fn` 都要写 `///`，
+- **注释用中文，代码里的字符串一律英文**：`defmt` 日志、`panic!`/`expect` 的错误信息都用英文，
+  只有注释和 `///` 文档注释用中文——中文字符串在 RTT 里只安字节打印，排查时还得反查源码。
+- `struct`/`enum` 及其字段与变体、`const`/`static`、`fn` 都要写 `///`，
   字段注释写“是什么 + 单位/取值”；不复述名字、不给显然的代码加废话注释。
 - `const` 抽出来放文件顶部（SSID、端口、超时这类），别散在函数里。
 - 定时/超时常量用 `Duration`；`Rate::from_mhz` 之类不带裸数字。

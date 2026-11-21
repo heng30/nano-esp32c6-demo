@@ -1,0 +1,18 @@
+[target.riscv32imac-unknown-none-elf]
+runner = "probe-rs run --chip=esp32c6 --preverify --always-print-stacktrace --no-location --catch-hardfault"
+
+[env]
+DEFMT_LOG="info"
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+rustflags = [
+  # defmt 的链接脚本必须排在 linkall.x 之前，linkall.x 最后
+  "-C", "link-arg=-Tdefmt.x",
+  "-C", "link-arg=-Tlinkall.x",
+  # 保留帧指针，RTT 里才有可用回溯
+  "-C", "force-frame-pointers",
+]
+
+[unstable]
+build-std = ["core"]
