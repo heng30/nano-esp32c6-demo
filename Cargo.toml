@@ -133,6 +133,11 @@ trouble-host = { version = "0.8", default-features = false, features = [
   "default-packet-pool",
 ] }
 
+# 构建期把 GB2312 汉字映射到 Unicode，给 ili9341-lcd 的 build-dependencies 用
+encoding_rs = { version = "0.8", default-features = false, features = [
+  "alloc",
+] }
+
 # embedded-tls 声明的 der 版本是 `0.8.0-rc.2`，解析器会真的挑到那个 rc，而它拉来的 der_derive
 # 是 0.8.0 正式版，两边 API 对不上；显式钉一个正式版让 der / der_derive 一致。
 der = { version = "0.8.3", default-features = false, features = [
@@ -140,9 +145,4 @@ der = { version = "0.8.3", default-features = false, features = [
   "oid",
   "time",
   "heapless",
-] }
-
-# 构建期把 GB2312 汉字映射到 Unicode，给 ili9341-lcd 的 build-dependencies 用
-encoding_rs = { version = "0.8", default-features = false, features = [
-  "alloc",
 ] }

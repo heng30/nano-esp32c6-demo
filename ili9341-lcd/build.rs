@@ -111,7 +111,6 @@ fn parse_bdf(path: &Path, wanted: &[u16]) -> BTreeMap<u16, [u8; GLYPH_LEN]> {
             encoding = rest.trim().parse().ok();
         } else if let Some(rest) = line.strip_prefix("BBX") {
             width = rest
-                .trim()
                 .split_whitespace()
                 .next()
                 .and_then(|w| w.parse().ok())
@@ -120,17 +119,15 @@ fn parse_bdf(path: &Path, wanted: &[u16]) -> BTreeMap<u16, [u8; GLYPH_LEN]> {
             rows.clear();
             in_bitmap = true;
         } else if line == "ENDCHAR" {
-            if let Some(cp) = encoding {
-                if wanted.binary_search(&cp).is_ok() {
-                    glyphs.insert(cp, to_glyph(&rows, width));
-                }
+            if let Some(cp) = encoding
+                && wanted.binary_search(&cp).is_ok()
+            {
+                glyphs.insert(cp, to_glyph(&rows, width));
             }
             encoding = None;
             in_bitmap = false;
-        } else if in_bitmap {
-            if let Ok(value) = u16::from_str_radix(line, 16) {
-                rows.push(value);
-            }
+        } else if in_bitmap && let Ok(value) = u16::from_str_radix(line, 16) {
+            rows.push(value);
         }
     }
 

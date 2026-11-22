@@ -1,7 +1,7 @@
 //! GB2312 常用汉字点阵字模。
 //!
-//! 数据由 `build.rs` 调 `tools/gen_cjk_font.py` 从 GNU Unifont 生成，落在 `OUT_DIR`，
-//! 不进仓库；字模按 Unicode 码点升序排列，查找用二分。
+//! 数据由 `build.rs` 从 GNU Unifont 生成，落在 `OUT_DIR`，不进仓库；
+//! 字模按 Unicode 码点升序排列，查找用二分。
 
 /// 字形边长（像素）。
 pub const GLYPH_SIZE: usize = 16;
