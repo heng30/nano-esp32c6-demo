@@ -15,6 +15,7 @@ members = [
   "minio-rs/core",
   "ili9341-lcd",
   "ili9341-lcd-slint",
+  "ili9341-lcd-lgvl",
 ]
 
 exclude = ["esp32c6-top50"]
@@ -46,6 +47,8 @@ ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
 embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
+# LVGL 的 C 源码由 lvgl-sys 构建期编译，需要交叉 C 工具链（见 ili9341-lcd-lgvl/.cargo/config.toml）。
+lvgl-sys = { version = "0.6.2", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
 embedded-tls = { version = "0.19", default-features = false, features = [
   "rsa",

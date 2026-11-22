@@ -18,7 +18,8 @@
 | `1588BS/` | 8×8 共阳点阵逐行扫描：行 ROW1–8 接 GPIO0–7、列 COL1–8 接 GPIO10/11/18–23，循环播放 4 帧图案 | 行串 1kΩ 限流；接线见 `1588BS/README.md` |
 | `baike/` | 10 脚单位数码管（共阴，A–G + DP + 两个公共端，静态驱动）：段选 GPIO0–7、公共端（3/8 脚）接 GND，0–9 每秒加一 | 引脚以**实测**为准（`3&8=COM`，与 `baike/1digit-7seg-LTS-360.pdf` 的 `1&6=COM` 不同），见 `README.md` |
 | `ili9341-lcd/` | 240×320 屏，16 位 8080 并口 + `ili9341`/`embedded-graphics`，占 18 根 GPIO，六个动画效果 + GB2312 中文点阵 | 内置 `build.rs` 生成字模 |
-| `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，7 页效果轮播（`src/effects/` 一个效果一个文件），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 |
+| `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，8 页效果轮播（`src/effects/` 一个效果一个文件，最后一页是音乐播放器：Rust 画唱片/唱臂/进度条 + Slint 画滚动歌词），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 || `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，8 页效果轮播（`src/effects/` 一个效果一个文件，最后一页是音乐播放器：Rust 画唱片/唱臂/进度条 + Slint 画滚动歌词），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 |
+| `ili9341-lcd-lgvl/` | 同一块屏跑 `lvgl 8.3`（LVGL 音乐播放器页：`lv_img` 整块旋转唱片、`lv_line` 唱臂、`lv_bar` 进度、`lv_label` 滚动歌词），`#![no_std]` 且不用 alloc | 唯一需要 C 工具链的示例：先 `nix-shell`（`shell.nix` 给 riscv32 交叉 GCC/binutils/libclang），nolibc 的头由 `src/cshim/include` 顶替、`.cargo/config.toml` 里用 `CPATH` 注入；`CPATH` 是绝对路径，换机器要改；默认只开 montserrat 14 字体 |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
 | `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |

@@ -1,18 +1,27 @@
 // 裸机上没有系统字体，字体必须在构建期嵌入。
 import "../../assets/DejaVuSans.ttf";
 import { DemoPage } from "effects/demo.slint";
+import { MusicPage } from "effects/music.slint";
 
-// 页面容器：第 0 页是 Slint 原生控件页，其余页都是 Rust 逐像素渲染的一张位图。
+// 页面容器：第 0 页是 Slint 原生控件页，第 1–6 页是 Rust 逐像素渲染的一张位图，
+// 第 7 页是音乐播放器（同样的位图 + Slint 画的歌词）。
 export component MainWindow inherits Window {
     default-font-family: "DejaVu Sans";
     in-out property <int> active: 0;
     in-out property <int> demo-counter: 0;
     in-out property <image> frame;
+    in-out property <[string]> lyrics;
+    in-out property <int> lyrics-index: 0;
 
     if active == 0: DemoPage {
         counter: root.demo-counter;
     }
-    if active >= 1: Image {
+    if active == 7: MusicPage {
+        disc: root.frame;
+        lyrics: root.lyrics;
+        current: root.lyrics-index;
+    }
+    if active >= 1 && active < 7: Image {
         source: root.frame;
         width: 100%;
         height: 100%;

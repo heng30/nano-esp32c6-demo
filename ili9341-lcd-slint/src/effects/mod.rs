@@ -5,6 +5,7 @@
 pub mod bars;
 pub mod clock;
 pub mod geometry;
+pub mod music;
 pub mod particles;
 pub mod plasma;
 pub mod tunnel;
@@ -26,12 +27,19 @@ pub const HEIGHT: usize = 120;
 /// 一个像素效果：把 `t_ms` 时刻的这一帧画进 RGB565 缓冲。
 pub trait Canvas {
     fn draw(&mut self, px: &mut [Rgb565Pixel], t_ms: u32);
+
+    /// 页面还要在 Slint 侧显示文字时，把需要的状态推给界面；默认什么都不做。
+    fn sync(&mut self, _ui: &MainWindow, _t_ms: u32) {}
 }
 
 /// 像素效果的数量，不含第 0 页的 Slint 控件页。
-const PIXEL_PAGES: usize = 6;
+const PIXEL_PAGES: usize = 7;
+/// 音乐播放器是最后一页，除了位图还要 Slint 画歌词。
+const MUSIC_PAGE: usize = PIXEL_PAGES;
 /// 每页停留时长。
 const PAGE_DURATION: Duration = Duration::from_secs(8);
+/// 音乐播放器页停留时长，够走完一遍播放列表。
+const MUSIC_PAGE_DURATION: Duration = Duration::from_secs(40);
 /// 控件页两个圆左右切换的间隔（毫秒）。
 const DEMO_TOGGLE_MS: u64 = 2000;
 
@@ -63,6 +71,7 @@ impl Effects {
                 Box::new(bars::Bars::new()),
                 Box::new(clock::Clock),
                 Box::new(plasma::Plasma),
+                Box::new(music::Music::new()),
             ],
         }
     }
@@ -70,7 +79,12 @@ impl Effects {
     /// 推进一帧：到点换页，然后只更新当前页。
     pub fn tick(&mut self) {
         let now = Instant::now();
-        if now - self.switched_at >= PAGE_DURATION {
+        let duration = if self.page == MUSIC_PAGE {
+            MUSIC_PAGE_DURATION
+        } else {
+            PAGE_DURATION
+        };
+        if now - self.switched_at >= duration {
             self.page = (self.page + 1) % (PIXEL_PAGES + 1);
             self.switched_at = now;
             self.fresh = true;
@@ -92,6 +106,7 @@ impl Effects {
         }
         self.canvases[self.page - 1].draw(buffer.make_mut_slice(), elapsed_ms as u32);
         self.ui.set_frame(Image::from_rgb565(buffer));
+        self.canvases[self.page - 1].sync(&self.ui, elapsed_ms as u32);
     }
 }
 

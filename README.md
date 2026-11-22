@@ -15,6 +15,7 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `baike/` | 10 脚单个**共阴**数码管（A–G + DP + 公共端）静态驱动，段选 GPIO0–7、公共端接 GND，0–9 每秒加一 | [链接](baike/README.md) |
 | `ili9341-lcd/` | 240×320 ILI9341 屏，16 位 8080 并口（18 根 GPIO），`ili9341` + `embedded-graphics`，六个动画效果 + GB2312 中文点阵 | [链接](ili9341-lcd/README.md) |
 | `ili9341-lcd-slint/` | 同一块屏跑 `slint` 界面（软件渲染 + 逐行刷屏），需要 `esp-alloc` | [链接](ili9341-lcd-slint/README.md) |
+| `ili9341-lcd-lgvl/` | 同一块屏跑 `lvgl 8.3`：`lv_img` 旋转唱片 + `lv_line` 唱臂 + `lv_bar` 进度 + `lv_label` 滚动歌词，需要交叉 C 工具链（`nix-shell`） | [链接](ili9341-lcd-lgvl/README.md) |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | [链接](qapass-1602a-lcd/README.md) |
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
 | `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |

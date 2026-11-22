@@ -1,0 +1,39 @@
+// 音乐播放器页：唱片、唱臂、进度条和三个按钮都是 Rust 逐像素画进 `disc` 的位图，
+// 这里只叠歌词——裸机上的字形只有 Slint 编译器能栅格化。
+// 右侧歌词区对应画布的 x ≥ 88（屏上 176px），唱片和进度条都画在这条线左边。
+
+export component MusicPage inherits Rectangle {
+    in property <image> disc;
+    in property <[string]> lyrics;
+    in property <int> current: 0;
+
+    Image {
+        source: root.disc;
+        width: 100%;
+        height: 100%;
+        image-fit: fill;
+    }
+
+    Rectangle {
+        x: 176px;
+        width: 144px;
+        height: 200px;
+        clip: true;
+
+        // 当前行固定落在 88px 处，上下行各差一行高，换行时 Slint 自己补间
+        for line[i] in root.lyrics: Text {
+            x: 6px;
+            width: 132px;
+            y: 88px + (i - root.current) * 24px;
+            text: line;
+            font-size: 13px;
+            color: i == root.current ? #ffffff : #5c6b7a;
+            overflow: elide;
+
+            animate y {
+                duration: 500ms;
+                easing: ease-in-out;
+            }
+        }
+    }
+}
