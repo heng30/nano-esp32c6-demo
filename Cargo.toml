@@ -13,6 +13,7 @@ members = [
 
   # 没有测试
   "3461BS",
+  "baike",
   "ILI9341-LCD",
 ]
 

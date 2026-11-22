@@ -1,0 +1,10 @@
+debug/
+target/
+
+.vscode/
+.zed/
+.helix/
+.nvim.lua
+.prux/
+
+**/*.rs.bk

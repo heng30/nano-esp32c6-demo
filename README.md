@@ -11,6 +11,7 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `http-ping/` | 起 WiFi AP（`esp32c6` / `12345678` / `192.168.2.1`），`GET /ping` 回 `pong` 并闪板载 RGB，内置 DHCP 服务端 | crate 内常量为准 |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | 见 `src/main.rs` 注释 |
 | `3461BS/` | 0.36 吋 4 位共阳数码管动态扫描，每秒加一 | [链接](3461BS/README.md) |
+| `baike/` | 10 脚单个**共阴**数码管（A–G + DP + 公共端）静态驱动，段选 GPIO0–7、公共端接 GND，0–9 每秒加一 | [链接](baike/README.md) |
 | `ILI9341-LCD/` | 240×320 ILI9341 屏，16 位 8080 并口（18 根 GPIO），`mipidsi` + `embedded-graphics` | [链接](ILI9341-LCD/README.md) |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | [链接](qapass-1602a-lcd/README.md) |
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
