@@ -17,6 +17,11 @@ pub const WIDTH: lv::lv_coord_t = 320;
 /// 屏高。
 pub const HEIGHT: lv::lv_coord_t = 240;
 
+/// 唱片机基座（x, y, w, h）：盘子和唱臂都装在这块板上。
+const PLINTH: (lv::lv_coord_t, lv::lv_coord_t, lv::lv_coord_t, lv::lv_coord_t) = (6, 6, 160, 146);
+/// 基座底部那条暗边的厚度，用来做出板材的厚度感。
+const PLINTH_LIP: lv::lv_coord_t = 6;
+
 /// 一首歌：时长与它的歌词在 [`LYRICS`] 里的位置。
 struct Song {
     /// 时长，毫秒。
@@ -79,8 +84,8 @@ const CYCLE_MS: u32 = {
 /// 唱片位图边长（像素）。
 const DISC: usize = 132;
 /// 唱片在屏上的位置。
-const DISC_X: lv::lv_coord_t = 6;
-const DISC_Y: lv::lv_coord_t = 6;
+const DISC_X: lv::lv_coord_t = 12;
+const DISC_Y: lv::lv_coord_t = 12;
 /// 唱片半径。
 const DISC_R: i32 = 62;
 /// 中心标签半径。
@@ -88,9 +93,11 @@ const LABEL_R: i32 = 20;
 /// 唱片纹路间隔（像素）。
 const GROOVE_STEP: i32 = 4;
 /// 唱臂支点，在盘外右上。
-const PIVOT: (lv::lv_coord_t, lv::lv_coord_t) = (154, 8);
-/// 唱针终点相对盘心的偏移：指向盘边内侧。
-const NEEDLE: (i32, i32) = (36, -48);
+const PIVOT: (lv::lv_coord_t, lv::lv_coord_t) = (152, 16);
+/// 唱针起点相对盘心的偏移：落在标签外沿（内环），盘心那段是标签不是纹路。
+const NEEDLE_NEAR: (i32, i32) = (12, -16);
+/// 唱针终点相对盘心的偏移：落在盘边内侧。
+const NEEDLE_FAR: (i32, i32) = (36, -48);
 /// 唱针头尺寸，比唱臂粗一点才看得出是「头」而不是线的末端。
 const NEEDLE_W: lv::lv_coord_t = 9;
 const NEEDLE_H: lv::lv_coord_t = 13;
@@ -116,15 +123,17 @@ const LYRIC_MID: i32 = 120;
 const LYRIC_SPAN: i32 = 3;
 
 /// 唱片位图的配色。
-const PX_BG: u16 = 0x0000;
 const PX_DISC: u16 = 0x18c3;
 const PX_GROOVE: u16 = 0x2945;
 const PX_RIM: u16 = 0x52aa;
 const PX_LABEL_A: u16 = 0xfb40;
 const PX_LABEL_B: u16 = 0xc320;
 
-/// 唱片位图（RGB565）与它的 LVGL 描述符，`lv_img` 只借用指针，必须活得够久。
-static mut DISC_PX: [u16; DISC * DISC] = [0; DISC * DISC];
+/// 唱片位图每个像素的字节数：RGB565 + 透明度，盘外透明才能露出基座。
+const DISC_BYTES: usize = DISC * DISC * 3;
+
+/// 唱片位图与它的 LVGL 描述符，`lv_img` 只借用指针，必须活得够久。
+static mut DISC_PX: [u8; DISC_BYTES] = [0; DISC_BYTES];
 static mut DISC_DSC: core::mem::MaybeUninit<lv::lv_img_dsc_t> = core::mem::MaybeUninit::uninit();
 /// 唱臂的两个点（支点、唱针），原地改完再交给 `lv_line`。
 static mut ARM_PTS: [lv::lv_point_t; 2] = [lv::lv_point_t { x: 0, y: 0 }; 2];
@@ -152,6 +161,7 @@ impl Music {
             let scr = lv::lv_disp_get_scr_act(lv::lv_disp_get_default());
             lv::lv_obj_set_style_bg_color(scr, rgb(0, 0, 0), lv::LV_PART_MAIN);
 
+            Self::build_plinth(scr);
             let disc = Self::build_disc(scr);
             let arm = Self::build_arm(scr);
             let needle = Self::build_needle(scr);
@@ -226,10 +236,10 @@ impl Music {
 
         let dsc = addr_of_mut!(DISC_DSC).cast::<lv::lv_img_dsc_t>();
         core::ptr::write(dsc, core::mem::zeroed());
-        (*dsc).header.set_cf(lv::LV_IMG_CF_TRUE_COLOR);
+        (*dsc).header.set_cf(lv::LV_IMG_CF_TRUE_COLOR_ALPHA);
         (*dsc).header.set_w(DISC as u32);
         (*dsc).header.set_h(DISC as u32);
-        (*dsc).data_size = (DISC * DISC * 2) as u32;
+        (*dsc).data_size = DISC_BYTES as u32;
         (*dsc).data = addr_of!(DISC_PX).cast::<u8>();
 
         let disc = lv::lv_img_create(scr);
@@ -242,6 +252,37 @@ impl Music {
             (DISC / 2) as lv::lv_coord_t,
         );
         disc
+    }
+
+    /// 唱片机基座：上亮下暗的竖向渐变，顶部压一条高光、底部压一条暗边，
+    /// 看起来是一块有厚度的板而不是一个色块。
+    unsafe fn build_plinth(scr: *mut lv::lv_obj_t) {
+        let (x, y, w, h) = PLINTH;
+
+        let plinth = lv::lv_obj_create(scr);
+        lv::lv_obj_set_pos(plinth, x, y);
+        lv::lv_obj_set_size(plinth, w, h);
+        lv::lv_obj_set_style_radius(plinth, 8, lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_border_width(plinth, 0, lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_bg_color(plinth, rgb(42, 47, 54), lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_bg_grad_color(plinth, rgb(16, 18, 22), lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_bg_grad_dir(plinth, lv::LV_GRAD_DIR_VER as u8, lv::LV_PART_MAIN);
+
+        // 顶面高光
+        let edge = lv::lv_obj_create(scr);
+        lv::lv_obj_set_pos(edge, x + 4, y + 2);
+        lv::lv_obj_set_size(edge, w - 8, 2);
+        lv::lv_obj_set_style_bg_color(edge, rgb(78, 86, 98), lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_border_width(edge, 0, lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_radius(edge, 1, lv::LV_PART_MAIN);
+
+        // 底部暗边：板厚
+        let lip = lv::lv_obj_create(scr);
+        lv::lv_obj_set_pos(lip, x + 2, y + h - PLINTH_LIP);
+        lv::lv_obj_set_size(lip, w - 4, PLINTH_LIP - 1);
+        lv::lv_obj_set_style_bg_color(lip, rgb(8, 9, 12), lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_border_width(lip, 0, lv::LV_PART_MAIN);
+        lv::lv_obj_set_style_radius(lip, 0, lv::LV_PART_MAIN);
     }
 
     /// 唱臂线段：两点由 [`update_arm`] 每帧改写。
@@ -319,11 +360,13 @@ impl Music {
 }
 
 /// 每首歌曲的进度换算成唱针坐标：写进 [`ARM_PTS`]，并把针头中心返回给调用方。
+///
+/// 行程从标签外沿（内环）到盘边：进度 0 时针头正好在纹路最内侧。
 fn update_arm(progress: i32) -> (lv::lv_coord_t, lv::lv_coord_t) {
     let (cx, cy) = (DISC_X as i32 + DISC_R, DISC_Y as i32 + DISC_R);
     let (nx, ny) = (
-        (cx + NEEDLE.0 * progress / 1000) as lv::lv_coord_t,
-        (cy + NEEDLE.1 * progress / 1000) as lv::lv_coord_t,
+        (cx + NEEDLE_NEAR.0 + (NEEDLE_FAR.0 - NEEDLE_NEAR.0) * progress / 1000) as lv::lv_coord_t,
+        (cy + NEEDLE_NEAR.1 + (NEEDLE_FAR.1 - NEEDLE_NEAR.1) * progress / 1000) as lv::lv_coord_t,
     );
     let pts = unsafe { &mut *addr_of_mut!(ARM_PTS) };
     pts[0] = lv::lv_point_t {
@@ -357,6 +400,8 @@ fn rgb(r: u8, g: u8, b: u8) -> lv::lv_color_t {
 }
 
 /// 一次性画出唱片位图：盘面 + 同心纹路 + 四象限标签，旋转交给 LVGL。
+///
+/// 每个像素写 RGB565 + 透明度三字节：盘外与轴孔透明，基座的渐变才透得上来。
 fn draw_disc() {
     let px = unsafe { &mut *addr_of_mut!(DISC_PX) };
     let center = DISC as i32 / 2;
@@ -366,22 +411,34 @@ fn draw_disc() {
             let (dx, dy) = (x - center, y - center);
             let d2 = dx * dx + dy * dy;
             let color = if d2 > DISC_R * DISC_R || d2 <= 9 {
-                // 盘外与中心轴孔都留页面底色
-                PX_BG
+                None
             } else if d2 <= LABEL_R * LABEL_R {
-                if (dx > 0) == (dy > 0) {
+                Some(if (dx > 0) == (dy > 0) {
                     PX_LABEL_A
                 } else {
                     PX_LABEL_B
-                }
+                })
             } else if d2 > (DISC_R - 2) * (DISC_R - 2) {
-                PX_RIM
+                Some(PX_RIM)
             } else {
                 // 纹路用半径平方分档：比开方省事，越靠外越密正好是唱片的观感
                 let band = d2 / (LABEL_R * LABEL_R * GROOVE_STEP / 6);
-                if band % 2 == 0 { PX_GROOVE } else { PX_DISC }
+                Some(if band % 2 == 0 { PX_GROOVE } else { PX_DISC })
             };
-            px[y as usize * DISC + x as usize] = color;
+
+            let at = (y as usize * DISC + x as usize) * 3;
+            match color {
+                Some(c) => {
+                    px[at] = c as u8;
+                    px[at + 1] = (c >> 8) as u8;
+                    px[at + 2] = 0xff;
+                }
+                None => {
+                    px[at] = 0;
+                    px[at + 1] = 0;
+                    px[at + 2] = 0;
+                }
+            }
         }
     }
 }
