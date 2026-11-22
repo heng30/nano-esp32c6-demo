@@ -10,10 +10,11 @@ members = [
   "openc6-bios-rs",
   "minio-rs",
   "minio-rs/core",
+  "3461BS",
+  "1588BS",
+  "baike",
 
   # 没有测试
-  "3461BS",
-  "baike",
   "ILI9341-LCD",
 ]
 

@@ -1,0 +1,14 @@
+[package]
+name = "matrix-1588bs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true

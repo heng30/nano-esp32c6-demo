@@ -14,6 +14,7 @@
 | `http-ping/` | 本目录：起 WiFi AP（`esp32c6` / `12345678` / 网关 `192.168.2.1`），80 端口响应 `GET /ping` 回 `pong` 并闪 RGB LED（GPIO8），内置 DHCP 服务端 | `curl http://192.168.2.1/ping` 验证；本 crate 自带 `#[panic_handler]` |
 | `bilibili-follower/` | 连 WiFi（STA，DHCP）每分钟走 HTTPS 查 B 站粉丝数并打日志：`embedded-tls 0.19`（`rsa` 特性）+ 手写 `GET`，无 `reqwless` | 根 `Cargo.toml` 里 `der` 的钉版是必须的（见注释）；证书链不校验 |
 | `3461BS/` | 4 位数码管动态扫描（GPIO0–4 段选、GPIO10/11/18/19 位选） | |
+| `1588BS/` | 8×8 共阳点阵逐行扫描：行 ROW1–8 接 GPIO0–7、列 COL1–8 接 GPIO10/11/18–23，循环播放 4 帧图案 | 行串 1kΩ 限流；接线见 `1588BS/README.md` |
 | `baike/` | 10 脚单位数码管（共阴，A–G + DP + 两个公共端，静态驱动）：段选 GPIO0–7、公共端（3/8 脚）接 GND，0–9 每秒加一 | 引脚以**实测**为准（`3&8=COM`，与 `baike/1digit-7seg-LTS-360.pdf` 的 `1&6=COM` 不同），见 `README.md` |
 | `ILI9341-LCD/` | 240×320 屏，16 位 8080 并口 + `mipidsi`/`embedded-graphics`，占 18 根 GPIO | |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
