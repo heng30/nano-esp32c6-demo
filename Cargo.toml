@@ -15,7 +15,7 @@ members = [
   "baike",
 
   # 没有测试
-  "ILI9341-LCD",
+  "ili9341-lcd",
 ]
 
 exclude = ["esp32c6-top50"]
@@ -39,8 +39,7 @@ overflow-checks = false
 static_cell = { version = "2.1", default-features = false }
 critical-section = { version = "1.2", default-features = false }
 
-mipidsi = { version = "0.10", default-features = false }
-smart-leds-trait = { version = "0.3", default-features = false }
+embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
@@ -120,6 +119,10 @@ edge-nal-embassy = { version = "0.9", default-features = false, features = [
   "proto-ipv4",
   "medium-ethernet",
 ] }
+
+smart-leds-trait = { version = "0.3", default-features = false }
+display-interface = { version = "0.5", default-features = false }
+ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
 
 trouble-host = { version = "0.8", default-features = false, features = [
   "gatt",

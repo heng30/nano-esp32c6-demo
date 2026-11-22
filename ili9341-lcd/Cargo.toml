@@ -16,5 +16,7 @@ defmt.workspace = true
 rtt-target.workspace = true
 panic-rtt-target.workspace = true
 
-mipidsi.workspace = true
+ili9341.workspace = true
+display-interface.workspace = true
+embedded-hal.workspace = true
 embedded-graphics.workspace = true

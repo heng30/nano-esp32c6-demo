@@ -1,11 +1,11 @@
-# ILI9341-LCD
+# ili9341-lcd
 
 ESP32-C6 直接驱动野火 2.8 寸 ILI9341 电阻屏（240×320，16 位 8080 并口），不用任何外部芯片。
 
 16 根数据线 + RS(DC) + WR，共 18 根 GPIO。CS 接地、RD 接 3V3、LCD_BK 接 GND，RST 接板子的 RST 排针。
 
 - 栈：`esp-hal 1.2.2` + `esp-rtos` + `embassy`（`#[esp_rtos::main]`）
-- 显示：`mipidsi 0.10` + `embedded-graphics 0.8`
+- 显示：`ili9341 0.6`（`graphics` 特性）+ `embedded-graphics 0.8`；初始化、地址窗口、`DrawTarget` 全部交给库，本目录只实现 `display-interface` 的 `WriteOnlyDataCommand`（8080-16 并口没有通用外设，只能 GPIO 打时序）
 - 日志：`defmt` over RTT（不是串口）
 
 ## 接线
@@ -84,5 +84,6 @@ probe-rs attach target/riscv32imac-unknown-none-elf/release/ili9341-lcd --chip e
 ## 注意
 
 - 每个像素要逐根翻 16 次 GPIO，全屏大约 50–100 ms，十几 fps。静态画面够用，动画别想。
-- 想提速的话，把 `Gpio16Bus::set_value` 换成直接写 GPIO 的 `OUT_W1TS` / `OUT_W1TC` 寄存器，一次掩码写就能改完 16 根，能快十倍以上。
+- 想提速的话，把 `Bus::write` 换成直接写 GPIO 的 `OUT_W1TS` / `OUT_W1TC` 寄存器，一次掩码写就能改完 16 根，能快十倍以上。
+- 方向不对（画面镜像）就把 `Orientation::Landscape` 换成 `LandscapeFlipped`，别去改 MADCTL 常数。
 - XPT2046 触摸部分没有实现，需要另外 4 根 SPI 线。
