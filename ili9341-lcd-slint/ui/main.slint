@@ -1,0 +1,21 @@
+// 裸机上没有系统字体，字体必须在构建期嵌入。
+import "../../assets/DejaVuSans.ttf";
+import { DemoPage } from "effects/demo.slint";
+
+// 页面容器：第 0 页是 Slint 原生控件页，其余页都是 Rust 逐像素渲染的一张位图。
+export component MainWindow inherits Window {
+    default-font-family: "DejaVu Sans";
+    in-out property <int> active: 0;
+    in-out property <int> demo-counter: 0;
+    in-out property <image> frame;
+
+    if active == 0: DemoPage {
+        counter: root.demo-counter;
+    }
+    if active >= 1: Image {
+        source: root.frame;
+        width: 100%;
+        height: 100%;
+        image-fit: fill;
+    }
+}

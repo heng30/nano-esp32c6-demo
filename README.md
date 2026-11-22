@@ -13,13 +13,14 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `3461BS/` | 0.36 吋 4 位共阳数码管动态扫描，每秒加一 | [链接](3461BS/README.md) |
 | `1588BS/` | 1.5 吋 8×8 共阳点阵逐行扫描，循环播放全亮/棋盘/心形/叉号四帧 | [链接](1588BS/README.md) |
 | `baike/` | 10 脚单个**共阴**数码管（A–G + DP + 公共端）静态驱动，段选 GPIO0–7、公共端接 GND，0–9 每秒加一 | [链接](baike/README.md) |
-| `ILI9341-LCD/` | 240×320 ILI9341 屏，16 位 8080 并口（18 根 GPIO），`mipidsi` + `embedded-graphics` | [链接](ILI9341-LCD/README.md) |
+| `ili9341-lcd/` | 240×320 ILI9341 屏，16 位 8080 并口（18 根 GPIO），`ili9341` + `embedded-graphics`，六个动画效果 + GB2312 中文点阵 | [链接](ili9341-lcd/README.md) |
+| `ili9341-lcd-slint/` | 同一块屏跑 `slint` 界面（软件渲染 + 逐行刷屏），需要 `esp-alloc` | [链接](ili9341-lcd-slint/README.md) |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | [链接](qapass-1602a-lcd/README.md) |
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
 | `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |
 | `ble-led/` | BLE 控制的板载 RGB 灯：手机写 `on`/`off`，`trouble-host` + `esp-hal-smartled` | [链接](ble-led/README.md) |
 
-`esp32c6-top50/`（上游仓库克隆与报告）和 `openc6-bios-rs/`（未开工）已 exclude，不参与构建。
+`esp32c6-top50/`（只读的上游仓库克隆与报告）已 exclude，不参与构建。
 
 ## 环境
 

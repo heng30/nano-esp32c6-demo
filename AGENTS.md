@@ -17,7 +17,8 @@
 | `assets/` | 仓库公共资源：`unifont.bdf`（GNU Unifont 17.0.04 点阵字库，9 MB，OFL 1.1 / GPLv2+ 双许可） | 只读大文件，`ili9341-lcd/build.rs` 抠 GB2312 字模用；换版本要同步 `assets/README.md` |
 | `1588BS/` | 8×8 共阳点阵逐行扫描：行 ROW1–8 接 GPIO0–7、列 COL1–8 接 GPIO10/11/18–23，循环播放 4 帧图案 | 行串 1kΩ 限流；接线见 `1588BS/README.md` |
 | `baike/` | 10 脚单位数码管（共阴，A–G + DP + 两个公共端，静态驱动）：段选 GPIO0–7、公共端（3/8 脚）接 GND，0–9 每秒加一 | 引脚以**实测**为准（`3&8=COM`，与 `baike/1digit-7seg-LTS-360.pdf` 的 `1&6=COM` 不同），见 `README.md` |
-| `ILI9341-LCD/` | 240×320 屏，16 位 8080 并口 + `mipidsi`/`embedded-graphics`，占 18 根 GPIO | |
+| `ili9341-lcd/` | 240×320 屏，16 位 8080 并口 + `ili9341`/`embedded-graphics`，占 18 根 GPIO，六个动画效果 + GB2312 中文点阵 | 内置 `build.rs` 生成字模 |
+| `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，7 页效果轮播（`src/effects/` 一个效果一个文件），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
 | `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |

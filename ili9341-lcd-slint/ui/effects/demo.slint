@@ -1,0 +1,66 @@
+import { Button, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+// 被移植的 C3 示例界面：一个按钮 + 两个圆，counter 切换时用 states/animate 滑动。
+component Circle inherits Rectangle {
+    width: 30px;
+    height: 30px;
+    border-radius: self.width / 2;
+}
+
+export component DemoPage inherits Rectangle {
+    in-out property <int> counter: 0;
+
+    states [
+        right-aligned when counter > 0: {
+            circle1.x: 250px;
+            circle1.y: 40px;
+            circle2.x: 250px;
+            circle2.y: 0px;
+            in {
+                animate circle1.x, circle2.x {
+                    duration: 250ms;
+                }
+            }
+            out {
+                animate circle1.x, circle2.x {
+                    duration: 500ms;
+                }
+            }
+        }
+        left-aligned when counter <= 0: {
+            circle1.x: 0px;
+            circle1.y: 40px;
+            circle2.x: 0px;
+            circle2.y: 0px;
+        }
+    ]
+
+    VerticalBox {
+        alignment: start;
+        HorizontalBox {
+            max-height: self.min-height;
+            Button {
+                text: "Press and hold to change state";
+                clicked => {
+                    root.counter = root.counter > 0 ? 0 : 1;
+                }
+            }
+        }
+        Rectangle {
+            background: root.background.darker(20%);
+            width: 300px;
+            height: 120px;
+
+            circle1 := Circle {
+                x: 0px;
+                y: 40px;
+                background: green;
+            }
+            circle2 := Circle {
+                x: 0px;
+                y: 0px;
+                background: blue;
+            }
+        }
+    }
+}
