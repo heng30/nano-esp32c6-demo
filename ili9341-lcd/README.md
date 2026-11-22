@@ -7,6 +7,7 @@ ESP32-C6 直接驱动野火 2.8 寸 ILI9341 电阻屏（240×320，16 位 8080 �
 - 栈：`esp-hal 1.2.2` + `esp-rtos` + `embassy`（`#[esp_rtos::main]`）
 - 显示：`ili9341 0.6`（`graphics` 特性）+ `embedded-graphics 0.8`；初始化、地址窗口、`DrawTarget` 全部交给库，本目录只实现 `display-interface` 的 `WriteOnlyDataCommand`（8080-16 并口没有通用外设，只能 GPIO 打时序）
 - 日志：`defmt` over RTT（不是串口）
+- 字体：`font8x8 0.3`（`no_std`，8×8 点阵，只有 ASCII）
 
 ## 接线
 
@@ -81,9 +82,29 @@ RTT 日志用：
 probe-rs attach target/riscv32imac-unknown-none-elf/release/ili9341-lcd --chip esp32c6
 ```
 
+## 画面
+
+`main` 里六个效果依次循环，一个效果一个函数：
+
+| 函数 | 内容 |
+|------|------|
+| `effect_geometry` | 绕屏心旋转的三角形 + 固定的圆，每帧 2°，局部帧缓冲整块重画 |
+| `effect_wave` | 两条相位相反的正弦波，相邻列竖线插值 |
+| `effect_balls` | 8 个不同颜色小球碰壁反弹，每帧只重画各球新旧位置的并集矩形 |
+| `effect_plasma` | 逐像素算的等离子波，用三角波代替 sin |
+| `effect_scroll_text` | 8×8 字体放大 3 倍的滚动字幕 + 底部进度条（英文） |
+| `effect_cjk` | GB2312 汉字 16×16 点阵放大 2 倍，逐字出现 |
+
 ## 注意
 
-- 每个像素要逐根翻 16 次 GPIO，全屏大约 50–100 ms，十几 fps。静态画面够用，动画别想。
-- 想提速的话，把 `Bus::write` 换成直接写 GPIO 的 `OUT_W1TS` / `OUT_W1TC` 寄存器，一次掩码写就能改完 16 根，能快十倍以上。
+- 数据线连同 DC/WR 都在 GPIO0–31 同一组，`Bus::write` 用 `out` 寄存器整体覆盖（影子值缓存其余引脚），一个像素只两次寄存器写，全屏实测 46 ms（约 20 fps）。
+- 掩码用 `SET_LO` / `SET_HI` 两张 256 项常量表拼，逐位循环会吃掉 120 ms/帧（比总线写本身还慢）。
+- 寄存器地址是硬编码的（`0x6009_1000` + `0x04`）：换芯片要重新对 TRM，esp-hal 没公开 pac，绕不过去。
+- C6 的 CPU GPIO（CSR `0x805`，单周期写）只有 8 个通道，盖不住 16 根数据线，没用上。
 - 方向不对（画面镜像）就把 `Orientation::Landscape` 换成 `LandscapeFlipped`，别去改 MADCTL 常数。
+- 两套字体各管各的：`font8x8`（8×8，只有 ASCII）给滚动字幕，`font_cjk`（Unifont 16×16 点阵，全 GB2312 汉字 6763 字）给中文效果。
+- 中文字模是生成物，不进仓库：`build.rs` 每次构建直接解析 `unifont.bdf`，生成 6763 个汉字的字模（211 KB）与码点表（13 KB）到 `OUT_DIR`，再 `include_bytes!` 进固件，占 flash 不占 RAM。
+- 字库是仓库公共资源 `../assets/unifont.bdf`（GNU Unifont 17.0.04，9 MB，原样拷贝），构建不再依赖本机安装的字体；来源与许可见 `assets/README.md`。
+- GB2312 码点由 `encoding_rs`（build-dependency）解出来，不需要自带码表。
+- 中文按码点二分查找字模，只认 GB2312 汉字区，ASCII 与中文标点要走别的字体。
 - XPT2046 触摸部分没有实现，需要另外 4 根 SPI 线。

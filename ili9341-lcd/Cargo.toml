@@ -12,6 +12,7 @@ embassy-time.workspace = true
 embassy-futures.workspace = true
 critical-section.workspace = true
 static_cell.workspace = true
+font8x8.workspace = true
 defmt.workspace = true
 rtt-target.workspace = true
 panic-rtt-target.workspace = true
@@ -20,3 +21,6 @@ ili9341.workspace = true
 display-interface.workspace = true
 embedded-hal.workspace = true
 embedded-graphics.workspace = true
+
+[build-dependencies]
+encoding_rs.workspace = true
