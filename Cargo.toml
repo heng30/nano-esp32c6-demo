@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-  "kk_ui_rs",
+  "kk-ui-rs",
   "3461BS",
   "1588BS",
   "baike",
@@ -165,4 +165,4 @@ lvgl-rust = { version = "0.3", default-features = false, features = [
   "use-string-functions",
 ] }
 
-kk-ui-rs = { path = "kk_ui_rs" }
+kk-ui-rs = { path = "kk-ui-rs" }
