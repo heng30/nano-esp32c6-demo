@@ -20,6 +20,7 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
 | `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |
 | `ble-led/` | BLE 控制的板载 RGB 灯：手机写 `on`/`off`，`trouble-host` + `esp-hal-smartled` | [链接](ble-led/README.md) |
+| `kkui-rs/` | KK_UI（128×64 单色菜单 UI）的 Rust 移植库 `kk_ui_rs/` + 在 ILI9341 上跑原版标准 Demo 的 `ili9341-kkui-demo/`；**独立 workspace**，依赖不继承根 `workspace.dependencies` | [链接](kkui-rs/ili9341-kkui-demo/README.md) |
 
 `esp32c6-top50/`（只读的上游仓库克隆与报告）已 exclude，不参与构建。
 

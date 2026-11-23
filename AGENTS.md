@@ -25,6 +25,7 @@
 | `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |
 | `ble-led/` | BLE 控制板载 WS2812B：SIG `0x1815`/`0x2BE2` 特性写 ASCII `on`/`off`，`trouble-host` + `esp-hal-smartled` | 同上：`build-std` + `rustflags` 给链接参数，无 `build.rs`；接线见 `ble-led/README.md` |
 | `esp32c6-top50/` | 抓下来做参考的上游仓库克隆 + 报告（`REPORT.md`、`BARE-CHIP-ONLY.md`） | **只读**，已 gitignore，不要改、不要当本仓代码提交 |
+| `kkui-rs/` | **独立的嵌套 workspace**（自带 `Cargo.toml`、`Cargo.lock`、`target/`，不是根 workspace 成员）：`kk_ui_rs/` 是 KK_UI 单色菜单 UI 的 Rust 移植库（只依赖 `core`，主机可测），`ili9341-kkui-demo/` 把 128×64 画布 2 倍放大后跑在 ILI9341 上 | 依赖在这里各自钉版本，**不要**改成 `workspace = true`；构建要 `cd kkui-rs` 或 `cd kkui-rs/ili9341-kkui-demo` |
 | `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall` 系统调用、日志式环形 flash 文件系统、ZC6 压缩、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | 自带全局汇编 trap 向量表（`.rwtext`，必须 IRAM）；`src/web/index.html` 直接来自上游；`Rompass__openc6-bios` 是指向 `esp32c6-top50/` 的只读符号链接 |
 
 ## 依赖约定（workspace）
