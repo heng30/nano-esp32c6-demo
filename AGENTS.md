@@ -7,6 +7,18 @@
 
 本文件随当前工作目录加载；改哪个子目录的例子就先看对应 `README.md` 的接线表。
 
+## 板子（实测）
+
+nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1，MAC `40:4c:ca:5f:ca:14`：
+
+- **Flash 16 MB**（Quad SPI，在模组里，不在片上）、**512 KB HP SRAM + 16 KB LP SRAM**、320 KB ROM，**无 PSRAM**。
+  `ld/esp32c6/memory.x` 的 `RAM` 段只有 `0x6E610`（≈441 KB），另 64 KB 等二级 bootloader 退出才释放，
+  剩余给 flash cache——帧缓冲这类大缓冲区一律落 `.bss`，加新效果前先算总占用。
+- 核：单核 RISC-V HP 最高 160 MHz（LP 核 20 MHz）。
+- 复核命令：`espflash board-info`（走 `/dev/ttyACM0` 的 CH343 UART 路，会把板子复位进 flash stub）；
+  `probe-rs` 只报芯片型号，**不报 flash 容量**。
+- 板载外设：WS2812B（GPIO8）、S1=GPIO9（BOOT）、S2=CHIP_PU（RST）；两个 Type-C（原生 USB-Serial-JTAG + CH343P）。
+
 ## 仓库地图
 
 | 目录 | 内容 | 注意 |

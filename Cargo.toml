@@ -44,6 +44,11 @@ smart-leds-trait = { version = "0.3", default-features = false }
 display-interface = { version = "0.5", default-features = false }
 ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
 
+slint = { version = "1.19", default-features = false }
+slint-build = { version = "1.19", default-features = false, features = [
+  "default",
+] }
+
 embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
@@ -141,11 +146,6 @@ trouble-host = { version = "0.8", default-features = false, features = [
 encoding_rs = { version = "0.8", default-features = false, features = [
   "alloc",
 ] }
-
-# 无 std 的 Slint：软件渲染 + 单线程 + libm，特性由成员按需追加。
-slint = { version = "1.19", default-features = false }
-# 在 host 上跑的 .slint 编译器，需要 std，不能关默认特性。
-slint-build = { version = "1.19" }
 
 # embedded-tls 声明的 der 版本是 `0.8.0-rc.2`，解析器会真的挑到那个 rc，而它拉来的 der_derive
 # 是 0.8.0 正式版，两边 API 对不上；显式钉一个正式版让 der / der_derive 一致。

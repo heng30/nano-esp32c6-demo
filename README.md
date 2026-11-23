@@ -4,6 +4,29 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 统一技术栈：`esp-hal 1.2` + `esp-rtos` + `embassy`，目标 `riscv32imac-unknown-none-elf`，
 日志一律 `defmt` over RTT（**不是串口**）。
 
+## 板子规格
+
+nanoESP32-C6（MuseLab v1.0），模组为 `ESP32-C6-WROOM-1-N16`（芯片 rev v0.1，MAC `40:4c:ca:5f:ca:14`）：
+
+| 项目 | 规格 |
+|---|---|
+| 核心 | 单核 32 位 RISC-V（HP），最高 160 MHz；另有 20 MHz LP 核 |
+| SRAM | 512 KB HP + 16 KB LP |
+| ROM | 320 KB |
+| Flash | 16 MB Quad SPI（模组内的片外 flash，非片上） |
+| PSRAM | 无 |
+| 无线 | Wi-Fi 6（2.4 GHz）、BLE 5.3、802.15.4（Thread / Zigbee） |
+| USB | 两个 Type-C：原生 USB-Serial-JTAG + CH343P（挂 UART0） |
+| 供电 | USB-C 5 V，板载 AMS1117 稳到 3.3 V |
+| 板载外设 | WS2812B RGB（GPIO8）、S1 = GPIO9（BOOT）、S2 = CHIP_PU（RST） |
+
+512 KB SRAM 不是全给程序的：`esp-hal` 的 `ld/esp32c6/memory.x` 里 `RAM` 段只有 `0x6E610`（≈441 KB），
+另有 64 KB 要等二级 bootloader 退出才释放，余下留给 flash cache。**没有 PSRAM**，几个字节以上的
+缓冲只能放 `.bss`（`ili9341-lcd` 三个效果的帧缓冲合计约 157 KB），写新效果前先算总占用。
+
+上表由 `espflash board-info` 实测（走 `/dev/ttyACM0` 的 UART 路，会复位板子进 flash stub）：
+前者报 `Flash size: 16MB`，`probe-rs` 本身不报 flash 容量。
+
 ## 示例
 
 | 目录 | 内容 | 接线文档 |
@@ -20,7 +43,9 @@ nanoESP32-C6 开发板的 Rust 裸机（`no_std`）示例集合，一个 cargo w
 | `ble-server/` | BLE GATT server，`trouble-host` + `esp-radio`，二进制名 `server` | 无需外设 |
 | `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |
 | `ble-led/` | BLE 控制的板载 RGB 灯：手机写 `on`/`off`，`trouble-host` + `esp-hal-smartled` | [链接](ble-led/README.md) |
+| `minio-rs/` | Minino OS 的 Rust 移植：BOOT 键菜单（Portal / wardriving / 802.15.4）、SSD1306 菜单、microSD 落盘、NV 持久化；WiFi 与 802.15.4 是两种不能同固件的形态 | [链接](minio-rs/README.md) |
 | `kkui-rs/` | KK_UI（128×64 单色菜单 UI）的 Rust 移植库 `kk_ui_rs/` + 在 ILI9341 上跑原版标准 Demo 的 `ili9341-kkui-demo/`；**独立 workspace**，依赖不继承根 `workspace.dependencies` | [链接](kkui-rs/ili9341-kkui-demo/README.md) |
+| `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall`、日志式环形 flash 文件系统、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | [链接](openc6-bios-rs/README.md) |
 
 `esp32c6-top50/`（只读的上游仓库克隆与报告）已 exclude，不参与构建。
 
@@ -52,6 +77,7 @@ cargo fmt
 ## 日志
 
 - `defmt` + `rtt-target`，`main` 开头 `rtt_target::rtt_init_defmt!();`，串口工具里看不到任何东西
+  （例外：`rainbow/` 不要日志，`DEFMT_LOG="off"`、不用 `rtt-target`、`#[panic_handler]` 自己实现）
 - `DEFMT_LOG` 已写死在各自 `.cargo/config.toml` 的 `[env]`；`defmt` 1.x 缺省只保留 error，改级别改那里
 - 已跑起来的固件可单独挂日志：`probe-rs attach target/riscv32imac-unknown-none-elf/release/<bin> --chip esp32c6`
 - `release` 下需 `debug = 2` 才有日志位置，根 `[profile.release]` 已带，别删
@@ -63,7 +89,7 @@ cargo fmt
 用 `features` 追加——并集会把 WiFi+BLE 整套塞进纯显示例程。
 
 升级依赖：改根 `Cargo.toml` → 根 `Cargo.lock` 刷新 → 逐个目录 `cargo build`。`esp-hal` 升级会连带
-`ble-server` 的 `trouble-host` API。
+`ble-server` / `ble-led` 的 `trouble-host` API。
 
 ## 约定
 
