@@ -7,7 +7,7 @@ rustflags = ["-C", "link-arg=-Tdefmt.x", "-C", "link-arg=-Tlinkall.x", "-C", "fo
 
 [env]
 DEFMT_LOG = "info"
-# LVGL 的 C 源码要靠交叉 C 编译器编：先进 `nix-shell ili9341-lcd-lgvl/shell.nix`。
+# LVGL 的 C 源码要靠交叉 C 编译器编：先进 `nix-shell ili9341-lcd-lvgl/shell.nix`。
 CC_riscv32imac_unknown_none_elf = "riscv32-none-elf-gcc"
 AR_riscv32imac_unknown_none_elf = "riscv32-none-elf-ar"
 # nix 的这个 GCC 是 nolibc 的，且会把宿主 glibc 的头塞进搜索路径（对上 riscv32 会报
@@ -15,7 +15,11 @@ AR_riscv32imac_unknown_none_elf = "riscv32-none-elf-ar"
 # 真用到的 strlen/strcmp/strcpy/strcat 由 lvgl-sys 自带，不链接 newlib。
 CFLAGS_riscv32imac_unknown_none_elf = "-march=rv32imac -mabi=ilp32 -fno-stack-protector"
 # 绝对路径是这台机器的仓库位置：`[env] relative` 在这里的 cargo 上没生效，换机器改这一行。
-CPATH = "/data/Code/rust/nano-esp32c6-demos/ili9341-lcd-lgvl/src/cshim/include"
+CPATH = "/data/Code/rust/nano-esp32c6-demos/ili9341-lcd-lvgl/src/cshim/include"
+# lvgl-rust-sys 的 build.rs 从这里找 lv_conf.h（OBJ_ID 那三行是 lvgl-rust 硬要求）。
+DEP_LV_CONFIG_PATH = { value = "lvgl-config", relative = true }
+# lvgl-rust 的句柄槽位：默认 32 个不够两页（音乐页 20 + 控制面板 13），32 位下每槽 8 字节。
+LVGL_RUST_HANDLE_SLOTS = "64"
 # lvgl-sys 的 build.rs 把 Rust 三元组直接丢给 libclang，而 clang 只认 riscv32-unknown-elf，
 # 这里补一次 --target（后写的覆盖前面的）。
 BINDGEN_EXTRA_CLANG_ARGS_riscv32imac_unknown_none_elf = "--target=riscv32-unknown-elf"

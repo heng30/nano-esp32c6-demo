@@ -1,5 +1,5 @@
 [package]
-name = "ili9341-lcd-lgvl"
+name = "ili9341-lcd-lvgl"
 version.workspace = true
 edition.workspace = true
 
@@ -13,10 +13,8 @@ critical-section.workspace = true
 defmt.workspace = true
 rtt-target.workspace = true
 panic-rtt-target.workspace = true
-
-# LVGL 8.3 的 C 源码由 lvgl-sys 在构建期用交叉 C 编译器编进来；Rust 侧没有包装层。
-lvgl-sys = { workspace = true, features = ["use-vendored-config"] }
-
 ili9341.workspace = true
 display-interface.workspace = true
 embedded-hal.workspace = true
+
+lvgl-rust.workspace = true

@@ -15,7 +15,7 @@ members = [
   "minio-rs/core",
   "ili9341-lcd",
   "ili9341-lcd-slint",
-  "ili9341-lcd-lgvl",
+  "ili9341-lcd-lvgl",
 ]
 
 exclude = ["esp32c6-top50"]
@@ -52,8 +52,6 @@ slint-build = { version = "1.19", default-features = false, features = [
 embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
-# LVGL 的 C 源码由 lvgl-sys 构建期编译，需要交叉 C 工具链（见 ili9341-lcd-lgvl/.cargo/config.toml）。
-lvgl-sys = { version = "0.6.2", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
 embedded-tls = { version = "0.19", default-features = false, features = [
   "rsa",
@@ -150,8 +148,16 @@ encoding_rs = { version = "0.8", default-features = false, features = [
 # embedded-tls 声明的 der 版本是 `0.8.0-rc.2`，解析器会真的挑到那个 rc，而它拉来的 der_derive
 # 是 0.8.0 正式版，两边 API 对不上；显式钉一个正式版让 der / der_derive 一致。
 der = { version = "0.8.3", default-features = false, features = [
-  "derive",
   "oid",
   "time",
+  "derive",
   "heapless",
+] }
+
+# LVGL 9.6 的 C 源码由 lvgl-rust-sys 构建期编译，需要交叉 C 工具链（见 ili9341-lcd-lvgl/.cargo/config.toml）。
+# 配置走本仓自己的 lv_conf.h（`DEP_LV_CONFIG_PATH`），不用它的 vendored config。
+lvgl-rust = { version = "0.3", default-features = false, features = [
+  "defmt",
+  "color_depth_16",
+  "use-string-functions",
 ] }
