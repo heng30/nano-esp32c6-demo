@@ -1,0 +1,20 @@
+[package]
+name = "ili9341-lcd-kkui"
+version.workspace = true
+edition.workspace = true
+description = "在 ILI9341 (8080 并口) 上运行 kk-ui-rs 移植版 KK_UI 标准 Demo"
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+embassy-executor.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+
+kk-ui-rs.workspace = true
+ili9341.workspace = true
+display-interface.workspace = true
+embedded-hal.workspace = true
+embedded-graphics-core.workspace = true

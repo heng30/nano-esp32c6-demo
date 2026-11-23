@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "kk_ui_rs",
   "3461BS",
   "1588BS",
   "baike",
@@ -16,6 +17,7 @@ members = [
   "ili9341-lcd",
   "ili9341-lcd-slint",
   "ili9341-lcd-lvgl",
+  "ili9341-lcd-kkui",
 ]
 
 exclude = ["esp32c6-top50"]
@@ -51,8 +53,9 @@ slint-build = { version = "1.19", default-features = false, features = [
 
 embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
-embedded-graphics = { version = "0.8", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
+embedded-graphics = { version = "0.8", default-features = false }
+embedded-graphics-core = { version = "0.4", default-features = false }
 embedded-tls = { version = "0.19", default-features = false, features = [
   "rsa",
 ] }
@@ -161,3 +164,5 @@ lvgl-rust = { version = "0.3", default-features = false, features = [
   "color_depth_16",
   "use-string-functions",
 ] }
+
+kk-ui-rs = { path = "kk_ui_rs" }
