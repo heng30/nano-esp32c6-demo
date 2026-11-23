@@ -11,8 +11,8 @@ use core::mem::MaybeUninit;
 use core::ptr::{addr_of, addr_of_mut};
 
 use lvgl_rust::{
-    Error, Handle, ImageColorkey, ImageData, ImageDsc, ImageSrc, Lvgl, Obj, PixelFormat, Selector,
-    WidgetExt,
+    Error, Handle, ImageColorkey, ImageData, ImageDsc, ImageSrc, Lvgl, Obj, Owned, PixelFormat,
+    Selector, WidgetExt,
     color::{hex, rgb},
     enums::{Align, GradDir, LabelLongMode, Part},
     sys,
@@ -165,13 +165,20 @@ pub struct Music {
     lyrics: [Handle<Label>; LYRICS.len()],
     /// 歌词滚动位置，Q8 定点：整数部分是「第几行」。
     scroll: i32,
+    /// 这页自己的屏幕：没有父对象，必须由这里持有，否则 drop 时连屏幕一起删掉。
+    _owned: Owned<Obj>,
+    /// 同一个屏幕的句柄，切页时交给 `Lvgl::load_screen`。
+    pub screen: Handle<Obj>,
 }
 
 impl Music {
     /// 在当前活动屏幕上建好整页控件。
     pub fn build(lv: &mut Lvgl) -> Result<Self, Error> {
+        let owned = lv.create_screen()?;
+        let screen = owned.get(lv)?.handle()?;
+
         let (plinth, edge, lip, disc, arm, hub, needle, bar, buttons, lyrics) = {
-            let mut scr = lv.screen_active_mut().expect("no active screen");
+            let mut scr = owned.get_mut(lv)?;
 
             let plinth = Obj::create(&mut scr)?.handle()?;
             let edge = Obj::create(&mut scr)?.handle()?;
@@ -194,7 +201,9 @@ impl Music {
                 *slot = Label::create(&mut scr)?.handle()?;
             }
 
-            (plinth, edge, lip, disc, arm, hub, needle, bar, buttons, lyrics)
+            (
+                plinth, edge, lip, disc, arm, hub, needle, bar, buttons, lyrics,
+            )
         };
 
         // 基座：上亮下暗的竖向渐变，顶部压一条高光、底部压一条暗边，看起来是一块有厚度的板。
@@ -273,7 +282,11 @@ impl Music {
         }
 
         // 上一首 / 暂停 / 下一首：屏没有触摸，纯装饰。
-        let symbols = [sys::LV_SYMBOL_PREV, sys::LV_SYMBOL_PAUSE, sys::LV_SYMBOL_NEXT];
+        let symbols = [
+            sys::LV_SYMBOL_PREV,
+            sys::LV_SYMBOL_PAUSE,
+            sys::LV_SYMBOL_NEXT,
+        ];
         for (i, (btn, symbol)) in buttons.iter().zip(symbols).enumerate() {
             let label = {
                 let mut o = btn.get_mut(lv)?;
@@ -309,6 +322,8 @@ impl Music {
             bar,
             lyrics,
             scroll: 0,
+            _owned: owned,
+            screen,
         })
     }
 

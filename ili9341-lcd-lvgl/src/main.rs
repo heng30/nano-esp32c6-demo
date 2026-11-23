@@ -20,7 +20,7 @@ use esp_hal::{
 };
 use lvgl_rust::{
     Display, DisplayCell, DrawBuf, DrawBuffers, Flush, FlushRequest, Lvgl, LvglAccess, RenderMode,
-    ScreenAnim, WidgetExt, tick_inc,
+    ScreenAnim, tick_inc,
 };
 use panic_rtt_target as _;
 
@@ -38,6 +38,22 @@ const HOME_MS: u32 = 30_000;
 const DRAW_ROWS: usize = 40;
 /// 绘制缓冲字节数（RGB565）。
 const DRAW_BUF_BYTES: usize = music::WIDTH as usize * 2 * DRAW_ROWS;
+
+/// 屏驱动：所有状态都在这里，LVGL 只持有它的引用。
+static PANEL: DisplayCell<Panel> = DisplayCell::new();
+/// LVGL 的绘制缓冲。
+static DRAW_BUF: DrawBuf<DRAW_BUF_BYTES> = DrawBuf::new();
+/// 首帧是否已经刷过，只用来打一条日志确认屏真的在画。
+static FIRST_FLUSH: AtomicBool = AtomicBool::new(false);
+
+/// 证明「此刻只有本任务在碰 LVGL」的令牌。
+///
+/// LVGL 的全部调用都在 `main` 这一个任务里，flush 也是 `timer_handler` 同步回调过来的。
+/// 不用 `critical_section` 互斥：那会把每帧约 20 ms 的刷新期间中断全关掉。
+struct Token;
+
+// SAFETY: 令牌只在 `main` 的帧循环里就地创建，LVGL 的并发入口只有这一个任务。
+unsafe impl LvglAccess for Token {}
 
 /// 并口屏 + 一行像素的转换缓冲。
 struct Panel {
@@ -76,22 +92,6 @@ impl Flush for Panel {
         }
     }
 }
-
-/// 屏驱动：所有状态都在这里，LVGL 只持有它的引用。
-static PANEL: DisplayCell<Panel> = DisplayCell::new();
-/// LVGL 的绘制缓冲。
-static DRAW_BUF: DrawBuf<DRAW_BUF_BYTES> = DrawBuf::new();
-/// 首帧是否已经刷过，只用来打一条日志确认屏真的在画。
-static FIRST_FLUSH: AtomicBool = AtomicBool::new(false);
-
-/// 证明「此刻只有本任务在碰 LVGL」的令牌。
-///
-/// LVGL 的全部调用都在 `main` 这一个任务里，flush 也是 `timer_handler` 同步回调过来的。
-/// 不用 `critical_section` 互斥：那会把每帧约 20 ms 的刷新期间中断全关掉。
-struct Token;
-
-// SAFETY: 令牌只在 `main` 的帧循环里就地创建，LVGL 的并发入口只有这一个任务。
-unsafe impl LvglAccess for Token {}
 
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
@@ -149,18 +149,17 @@ async fn main(_spawner: Spawner) -> ! {
     )
     .expect("display create failed");
 
-    let mut music = music::Music::build(&mut lv).expect("music build failed");
-    let music_screen = lv
-        .screen_active()
-        .expect("no active screen")
-        .handle()
-        .expect("music screen handle failed");
     let home = home::Home::build(&mut lv).expect("home build failed");
+    let mut music = music::Music::build(&mut lv).expect("music build failed");
+    // lv.load_screen(music.screen, ScreenAnim::NONE)
+    //     .expect("load screen failed");
+
     info!("lvgl ready {}x{}", music::WIDTH, music::HEIGHT);
     drop(lv);
 
     let started = Instant::now();
     let mut showing_home = false;
+    let mut need_reload_screen = true;
 
     loop {
         let mut token = Token;
@@ -168,14 +167,20 @@ async fn main(_spawner: Spawner) -> ! {
         tick_inc(FRAME.as_millis() as u32);
 
         let elapsed = (Instant::now() - started).as_millis() as u32;
+
         // 一轮音乐播完就插播 30 秒控制面板，再切回音乐页
         let want_home = elapsed % (music::CYCLE_MS + HOME_MS) >= music::CYCLE_MS;
-        if want_home != showing_home {
-            let screen = if want_home { home.screen } else { music_screen };
+        if showing_home != want_home {
+            need_reload_screen = true;
+        }
+
+        if need_reload_screen {
+            let screen = if want_home { home.screen } else { music.screen };
             lv.load_screen(screen, ScreenAnim::NONE)
                 .expect("load screen failed");
             info!("page: {}", if want_home { "home" } else { "music" });
             showing_home = want_home;
+            need_reload_screen = false;
         }
 
         music.tick(&mut lv, elapsed).expect("music tick failed");
