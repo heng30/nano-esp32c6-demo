@@ -1,7 +1,7 @@
 //! 确认框弹窗：正文 + 取消/确定，上下键在两个按钮间切换。
 
 use crate::gfx::Frame;
-use crate::model::*;
+use crate::model::{EVENT_NONE, InputAction, InputEvent};
 use crate::runtime::{DialogFocus, OverlayType, Runtime, Status};
 use crate::widgets::utils;
 

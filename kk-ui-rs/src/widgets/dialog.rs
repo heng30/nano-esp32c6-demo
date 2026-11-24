@@ -10,7 +10,7 @@ mod message;
 mod toast;
 
 use crate::gfx::{DrawMode, Frame};
-use crate::model::*;
+use crate::model::{EVENT_NONE, EventId, InputAction, InputEvent, PageType};
 use crate::widgets::utils;
 use crate::runtime::{
     BOOL_VALUE_MS, DIALOG_CLOSE_MS, DIALOG_OPEN_MS, DialogFocus, FOCUS_MS, INT_VALUE_MS,

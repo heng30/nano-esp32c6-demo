@@ -1,7 +1,7 @@
 //! 首页：环形排列的图标选择器，切换时横向滑入。
 
 use crate::gfx::DrawMode;
-use crate::model::*;
+use crate::model::{HomePage, InputAction, InputEvent, PageType};
 use crate::runtime::{HOME_MS, PageState, Runtime, ease_q12, lerp_q12, round_q8};
 
 /// 首页标签框的宽度上限：画布宽度留 4 px 边距。

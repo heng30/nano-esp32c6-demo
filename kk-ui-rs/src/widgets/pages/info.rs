@@ -1,7 +1,7 @@
 //! 只读信息页：名称/取值两列，超出视口时滚动。
 
 use crate::gfx::{DrawMode, Frame};
-use crate::model::*;
+use crate::model::{InfoPage, InputAction, InputEvent, PageType};
 use crate::runtime::{
     INFO_HEADER_HEIGHT, INFO_SCROLL_MS, PageState, ROW_HEIGHT, Runtime, ease_q12, lerp_q12,
     round_q8,

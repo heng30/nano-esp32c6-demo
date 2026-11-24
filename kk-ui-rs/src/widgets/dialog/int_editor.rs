@@ -1,7 +1,7 @@
 //! 整数编辑器弹窗：草稿值按步长增减，新旧值纵向滚动切换。
 
 use crate::gfx::Frame;
-use crate::model::*;
+use crate::model::{EVENT_NONE, InputAction, InputEvent, IntBinding};
 use crate::runtime::{Overlay, OverlayType, Q12_ONE, Runtime, Status};
 
 use crate::widgets::utils::{BUFFER_LEN, draw_centered, format_int};

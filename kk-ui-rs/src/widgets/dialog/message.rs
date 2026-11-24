@@ -1,6 +1,6 @@
 //! 消息框弹窗：正文 + 单个确定键。
 
-use crate::model::*;
+use crate::model::{EventId, InputAction, InputEvent};
 use crate::runtime::{OverlayType, Runtime, Status};
 use crate::widgets::utils;
 

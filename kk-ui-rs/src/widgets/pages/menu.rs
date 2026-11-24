@@ -1,7 +1,7 @@
 //! 菜单页：可滚动条目列表、虚拟返回项、隐禁状态与右侧取值列。
 
 use crate::gfx::{DrawMode, Frame};
-use crate::model::*;
+use crate::model::{InputAction, InputEvent, ItemState, MenuItem, MenuItemType, MenuPage, PageType};
 use crate::runtime::{
     MENU_HEADER_HEIGHT, MENU_MS, PageState, ROW_HEIGHT, Runtime, Status, ease_q12, lerp_q12,
 };

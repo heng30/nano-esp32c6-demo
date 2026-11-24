@@ -2,7 +2,24 @@
 
 use crate::widgets::dialog;
 use crate::gfx::{DrawMode, Frame};
-use crate::model::*;
+use crate::model::{
+    App,
+    EVENT_NONE,
+    EventId,
+    Input,
+    InputAction,
+    InputEvent,
+    InputSource,
+    ItemState,
+    KEY_DOWN,
+    KEY_OK,
+    KEY_UP,
+    MenuItemType,
+    PAGE_NONE,
+    PageId,
+    PageRoute,
+    PageType,
+};
 use crate::widgets::pages;
 
 /// 导航栈深度上限。
