@@ -21,10 +21,12 @@ required-features = ["sim"]
 [features]
 cjk-fonts = []
 sim = ["dep:eframe", "dep:png"]
-tool = ["dep:clap", "dep:image"]
+tool = ["dep:clap", "dep:image", "dep:syn", "dep:proc-macro2"]
 
 [dependencies]
 png = { version = "0.18", default-features = false, optional = true }
+proc-macro2 = { version = "1", default-features = false, optional = true }
+
 eframe = { version = "0.37", default-features = false, features = [
   "x11",
   "glow",
@@ -36,6 +38,10 @@ clap = { version = "4", default-features = false, optional = true, features = [
   "usage",
   "derive",
   "error-context",
+] }
+syn = { version = "3.0", default-features = false, optional = true, features = [
+  "full",
+  "parsing",
 ] }
 image = { version = "0.25", default-features = false, optional = true, features = [
   "png",

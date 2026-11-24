@@ -4534,6 +4534,8 @@ dependencies = [
  "encoding_rs",
  "image",
  "png",
+ "proc-macro2",
+ "syn 3.0.10",
 ]
 
 [[package]]

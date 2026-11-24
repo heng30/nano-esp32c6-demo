@@ -147,12 +147,15 @@ kkui-tool font <目录或文件>... [--out font]  # 采集字符，产出 3 张�
 kkui-tool icon <图片> [--size 32] [-o 输出]   # png/jpeg/webp → XBM 位图（raw .bin）
 ```
 
-`font` 递归读目录下所有能按 UTF-8 解码的文件（跳过 `target`/`.git`/`node_modules`），
-把用到的字符按码点升序从 `assets/fonts/unifont.bdf` 里抠出来，产出与 `build.rs` 同构的
-三张平行表，`include_bytes!` 后即可组成 `Glyphs` 交给 `set_font`；同目录的 `text.txt`
-是采集到的字符清单，还能再作为输入喂回来。BDF 在编译期就 `include_bytes!` 进了工具
-（装出来的二进制约 21 MB），所以不需要传字库路径，也不依赖 `cjk-fonts` 特性；能取到哪些
-码点由 BDF 决定，取不到的字符会被列出来但不入表。
+`font` 的字符来源分两部分：**可打印 ASCII（英文字母、数字、英文标点）始终收录**；中文
+则靠扫描——目录只认 `.rs` 文件（跳过 `target`/`.git`/`node_modules`），且只取字符串与
+字符字面量里的字，**注释（含 `///` 文档注释）不算**。显式传入的非 `.rs` 文件按纯文本收全部
+字符，方便把上一次生成的 `text.txt` 再喂回来。
+
+字符按码点升序从 `assets/fonts/unifont.bdf` 里抠出字模，产出与 `build.rs` 同构的三张平行表，
+`include_bytes!` 后即可组成 `Glyphs` 交给 `set_font`；同目录的 `text.txt` 是采集到的字符清单。
+BDF 在编译期就 `include_bytes!` 进了工具（装出来的二进制约 21 MB），所以不需要传字库路径，
+也不依赖 `cjk-fonts` 特性；能取到哪些码点由 BDF 决定，取不到的字符会被列出来但不入表。
 
 `icon` 把图缩到 `--size` 见方再二值化（深色算点亮、透明算熄灭），按 `Frame::draw_xbm`
 的位序写 raw 二进制：低位在前、每行 8 像素对齐，32×32 正好 128 字节。

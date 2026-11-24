@@ -3,6 +3,10 @@
 //! 字模直接从编进本程序的 `assets/fonts/unifont.bdf` 里抠，与库的 `cjk-fonts` 特性
 //! 无关，装好后在哪都能跑。能取到的码点由 BDF 决定，取不到的字符会被列出来但不入表。
 //!
+//! 可打印 ASCII（英文字母、英文标点）始终收录；中文字只取扫描来的：目录只认 `.rs` 文件，
+//! 且只取字符串与字符字面量里的字，注释（含 `///` 文档注释）不算。显式传进来的非 `.rs`
+//! 文件按纯文本取全部字符，方便喂字符清单。
+//!
 //! 这是包内唯一的可执行程序，`cargo install --path .` 装的就是它：
 //!
 //! ```text
@@ -51,7 +55,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Collect every character used under the given paths and write the three font tables
+    /// Collect characters from .rs string and char literals and write the three font tables
     Font {
         /// Project directories or text files to scan
         #[arg(required = true)]
@@ -90,13 +94,19 @@ fn main() -> ExitCode {
 
 /// 采集字符，按码点升序从内嵌 BDF 里抠出字模，连同字符清单写进 `out`。
 fn font(paths: &[PathBuf], out: &Path) -> Result<(), String> {
-    let mut chars = BTreeSet::new();
+    // 英文与英文标点始终收录，中文字才靠扫描补。
+    let mut chars: BTreeSet<char> = (0x20..=0x7E).filter_map(char::from_u32).collect();
     for path in paths {
         if path.is_dir() {
             scan(path, &mut chars);
         } else if path.is_file() {
             let text = read_text(path)?;
-            chars.extend(text.chars());
+            if is_rust(path) {
+                collect_code_chars(&text, &mut chars);
+            } else {
+                // 显式给的文本文件（例如上一次生成的 text.txt）按原样取全部字符。
+                chars.extend(text.chars());
+            }
         } else {
             return Err(format!("{}: no such file or directory", path.display()));
         }
@@ -169,7 +179,7 @@ fn font(paths: &[PathBuf], out: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// 读目录下所有能按 UTF-8 解码的文件；二进制文件（图片、字库）自动跳过。
+/// 递归扫目录，只读 `.rs`：别的文件（图片、字库、markdown）跟界面上的字无关。
 fn scan(dir: &Path, chars: &mut BTreeSet<char>) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
@@ -181,10 +191,59 @@ fn scan(dir: &Path, chars: &mut BTreeSet<char>) {
                 continue;
             }
             scan(&path, chars);
-        } else if let Ok(text) = read_text(&path) {
-            chars.extend(text.chars());
+        } else if is_rust(&path)
+            && let Ok(source) = read_text(&path)
+        {
+            collect_code_chars(&source, chars);
         }
     }
+}
+
+/// 是不是 Rust 源码。
+fn is_rust(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "rs")
+}
+
+/// 收集一段 Rust 源码里代码位置的字符：只有字符串与字符字面量，注释一律不算。
+fn collect_code_chars(source: &str, chars: &mut BTreeSet<char>) {
+    // 词法解析失败（残缺片段）就当这文件没有可用的字，不让整趟采集失败。
+    if let Ok(tokens) = source.parse::<proc_macro2::TokenStream>() {
+        walk_tokens(tokens, chars);
+    }
+}
+
+/// 递归走词法单元，把字符串/字符字面量里的字收进来。
+fn walk_tokens(tokens: proc_macro2::TokenStream, chars: &mut BTreeSet<char>) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Group(group) => {
+                if !is_doc_attribute(&group) {
+                    walk_tokens(group.stream(), chars);
+                }
+            }
+            proc_macro2::TokenTree::Literal(literal) => match syn::Lit::new(literal) {
+                syn::Lit::Str(text) => chars.extend(text.value().chars()),
+                syn::Lit::Char(c) => {
+                    chars.insert(c.value());
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+/// `#[doc = "..."]` / `#![doc = "..."]`：`///` 与 `//!` 被重写成的属性，仍属注释，要剔掉。
+fn is_doc_attribute(group: &proc_macro2::Group) -> bool {
+    if group.delimiter() != proc_macro2::Delimiter::Bracket {
+        return false;
+    }
+    let mut inner = group.stream().into_iter();
+    let named_doc =
+        matches!(inner.next(), Some(proc_macro2::TokenTree::Ident(name)) if name == "doc");
+    let assigned =
+        matches!(inner.next(), Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=');
+    named_doc && assigned
 }
 
 /// 读一个文本文件，失败时把路径带进错误里。
@@ -239,4 +298,51 @@ fn show(c: &char) -> String {
 /// 写文件，失败时把路径带进错误里。
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     fs::write(path, bytes).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn literals_are_kept_and_comments_are_not() {
+        let source = r##"
+            //! 文档注释里的字不收
+            /// 行文档注释也不收
+            /* 块注释
+               跨行也不收 */
+            const LABEL: &str = "字符串 甲乙";
+            const MARK: char = '丙';
+            const RAW: &str = r#"原始 丁"#;
+            const ESCAPED: char = '\u{620A}';
+            // 注释里的 "假字符串" 也不收
+        "##;
+        let mut chars = BTreeSet::new();
+        collect_code_chars(source, &mut chars);
+        for c in ['字', '符', '串', '甲', '乙', '丙', '丁', '戊'] {
+            assert!(chars.contains(&c), "code char missing: {c}");
+        }
+        for c in ['注', '释', '块', '文', '档', '假'] {
+            assert!(!chars.contains(&c), "comment char leaked: {c}");
+        }
+    }
+
+    #[test]
+    fn directory_scan_takes_rust_files_only() {
+        let dir = std::env::temp_dir().join(format!("kkui-tool-scan-{}", std::process::id()));
+        fs::create_dir_all(&dir).expect("failed to create temp dir");
+        fs::write(dir.join("a.rs"), "const S: &str = \"甲乙\";\n// 丙\n").expect("write a.rs");
+        fs::write(dir.join("b.txt"), "丁戊\n").expect("write b.txt");
+
+        let mut chars = BTreeSet::new();
+        scan(&dir, &mut chars);
+        fs::remove_dir_all(&dir).expect("failed to remove temp dir");
+
+        assert!(
+            chars.contains(&'甲') && chars.contains(&'乙'),
+            "literal chars"
+        );
+        assert!(!chars.contains(&'丙'), "comment char leaked");
+        assert!(!chars.contains(&'丁'), "non-rust file should be skipped");
+    }
 }
