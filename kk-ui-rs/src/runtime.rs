@@ -58,8 +58,12 @@ pub(crate) const Q12_ONE: u16 = 4096;
 pub(crate) const MENU_HEADER_HEIGHT: i16 = 18;
 /// 信息页标题栏高度：同菜单，容纳 16 px 字形。
 pub(crate) const INFO_HEADER_HEIGHT: i16 = 18;
-/// 列表行高。
+/// 列表行高：一个 16×16 字形的占位高度。
 pub(crate) const ROW_HEIGHT: i16 = 16;
+/// 列表条目之间的垂直空隙（像素）。
+pub(crate) const ROW_GAP: i16 = 2;
+/// 列表行距：行高加空隙，菜单与信息页的滚动/命中/滚动条都按它算。
+pub(crate) const ROW_PITCH: i16 = ROW_HEIGHT + ROW_GAP;
 /// 页面切换时旧页面的视差位移。
 const PAGE_PARALLAX: i16 = 32;
 

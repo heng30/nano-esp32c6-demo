@@ -3,7 +3,7 @@
 use crate::gfx::{DrawMode, Frame};
 use crate::model::{InfoPage, InputAction, InputEvent, PageType};
 use crate::runtime::{
-    INFO_HEADER_HEIGHT, INFO_SCROLL_MS, PageState, ROW_HEIGHT, Runtime, ease_q12, lerp_q12,
+    INFO_HEADER_HEIGHT, INFO_SCROLL_MS, PageState, ROW_PITCH, Runtime, ease_q12, lerp_q12,
     round_q8,
 };
 use crate::widgets::utils;
@@ -26,7 +26,7 @@ fn info_header_height(page: &InfoPage) -> i16 {
 /// 信息页可滚动的最大距离，Q8；内容装得下时为 0。
 fn info_max_scroll_q8(rt: &Runtime, page: &InfoPage) -> i32 {
     let header = info_header_height(page);
-    let content = page.rows.len() as i32 * ROW_HEIGHT as i32;
+    let content = page.rows.len() as i32 * ROW_PITCH as i32;
     let viewport = rt.frame.height() as i32 - header as i32;
     if content > viewport {
         (content - viewport) * 256
@@ -67,7 +67,7 @@ fn info_move(rt: &mut Runtime, direction: i16, steps: u16, now: u32) {
     if steps == 0 || maximum == 0 {
         return;
     }
-    let amount = steps as i32 * ROW_HEIGHT as i32 * 256;
+    let amount = steps as i32 * ROW_PITCH as i32 * 256;
     let target = rt.current.scroll_q8;
     let target = if direction < 0 {
         if target > amount { target - amount } else { 0 }
@@ -80,7 +80,7 @@ fn info_move(rt: &mut Runtime, direction: i16, steps: u16, now: u32) {
         return;
     }
     rt.current.scroll_q8 = target;
-    rt.current.top = (target / (ROW_HEIGHT as i32 * 256)) as u16;
+    rt.current.top = (target / (ROW_PITCH as i32 * 256)) as u16;
     rt.list_anim.scroll_from_q8 = current;
     rt.list_anim.focus_from_q8 = 0;
     rt.list_anim.started = now;
@@ -127,7 +127,7 @@ pub(crate) fn info_draw(
     } else {
         state.scroll_q8
     };
-    let visible_rows = ((screen_height - header) / ROW_HEIGHT) as u16;
+    let visible_rows = ((screen_height - header) / ROW_PITCH) as u16;
     let clip_right = clip_x + clip_width as i16;
     let content_left = clip_x;
     let mut content_right = clip_right;
@@ -155,8 +155,8 @@ pub(crate) fn info_draw(
         draw_content = false;
     }
     for (index, row) in page.rows.iter().enumerate() {
-        let y = header + index as i16 * ROW_HEIGHT - round_q8(scroll);
-        if !draw_content || y >= screen_height || y + ROW_HEIGHT <= header {
+        let y = header + index as i16 * ROW_PITCH - round_q8(scroll);
+        if !draw_content || y >= screen_height || y + ROW_PITCH <= header {
             continue;
         }
         let has_value = row.value.with(|value| !value.is_empty());
@@ -195,7 +195,7 @@ pub(crate) fn info_draw(
     {
         let viewport = screen_height - header;
         let mut thumb_height = (viewport as u32 * viewport as u32
-            / (page.rows.len() as u32 * ROW_HEIGHT as u32)) as i16;
+            / (page.rows.len() as u32 * ROW_PITCH as u32)) as i16;
         if thumb_height < 8 {
             thumb_height = 8;
         }

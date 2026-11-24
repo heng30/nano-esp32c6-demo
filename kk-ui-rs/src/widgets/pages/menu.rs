@@ -3,13 +3,14 @@
 use crate::gfx::{DrawMode, Frame};
 use crate::model::{InputAction, InputEvent, ItemState, MenuItem, MenuItemType, MenuPage, PageType};
 use crate::runtime::{
-    MENU_HEADER_HEIGHT, MENU_MS, PageState, ROW_HEIGHT, Runtime, Status, ease_q12, lerp_q12,
+    MENU_HEADER_HEIGHT, MENU_MS, PageState, ROW_HEIGHT, ROW_PITCH, Runtime, Status, ease_q12,
+    lerp_q12,
 };
 use crate::widgets::{dialog, utils};
 
 /// 菜单内容区能完整显示的行数，屏越高行越多，至少一行。
 fn visible_rows(rt: &Runtime) -> u16 {
-    ((rt.frame.height() - MENU_HEADER_HEIGHT) / ROW_HEIGHT).max(1) as u16
+    ((rt.frame.height() - MENU_HEADER_HEIGHT) / ROW_PITCH).max(1) as u16
 }
 
 /// 取当前页面对应的菜单页。
@@ -125,8 +126,8 @@ pub(crate) fn menu_repair_focus(rt: &Runtime, state: &mut PageState) {
     let visible_count = menu_visible_count(page);
     let max_top = visible_count.saturating_sub(visible_rows(rt));
     state.top = state.top.min(max_top);
-    state.scroll_q8 = state.top as i32 * ROW_HEIGHT as i32 * 256;
-    state.focus_q8 = (visible - state.top) as i32 * ROW_HEIGHT as i32 * 256;
+    state.scroll_q8 = state.top as i32 * ROW_PITCH as i32 * 256;
+    state.focus_q8 = (visible - state.top) as i32 * ROW_PITCH as i32 * 256;
 }
 
 /// 当前（可能仍在动画中的）滚动量与焦点行，Q8。
@@ -192,8 +193,8 @@ fn menu_move(rt: &mut Runtime, direction: i16, steps: u16, now: u32) {
     }
     let max_top = count.saturating_sub(visible_rows(rt));
     rt.current.top = rt.current.top.min(max_top);
-    rt.current.scroll_q8 = rt.current.top as i32 * 4096;
-    rt.current.focus_q8 = (visible - rt.current.top) as i32 * 4096;
+    rt.current.scroll_q8 = rt.current.top as i32 * ROW_PITCH as i32 * 256;
+    rt.current.focus_q8 = (visible - rt.current.top) as i32 * ROW_PITCH as i32 * 256;
     rt.list_anim.scroll_from_q8 = old_scroll;
     rt.list_anim.focus_from_q8 = old_focus;
     rt.list_anim.started = now;
@@ -315,7 +316,7 @@ pub(crate) fn menu_draw(
     let visible_count = menu_visible_count(page);
     let clip_right = clip_x + clip_width as i16;
     let rows = visible_rows(rt);
-    let content_height = rows * ROW_HEIGHT as u16;
+    let content_height = rows * ROW_PITCH as u16;
     let screen_width = rt.frame.width();
 
     rt.frame
@@ -326,9 +327,9 @@ pub(crate) fn menu_draw(
         .set_clip(clip_x, MENU_HEADER_HEIGHT, clip_width, content_height);
     for visible in 0..visible_count {
         let item_index = menu_visible_to_item(page, visible);
-        let y = MENU_HEADER_HEIGHT + visible as i16 * ROW_HEIGHT - (scroll / 256) as i16;
-        if y >= MENU_HEADER_HEIGHT + rows as i16 * ROW_HEIGHT
-            || y + ROW_HEIGHT <= MENU_HEADER_HEIGHT
+        let y = MENU_HEADER_HEIGHT + visible as i16 * ROW_PITCH - (scroll / 256) as i16;
+        if y >= MENU_HEADER_HEIGHT + rows as i16 * ROW_PITCH
+            || y + ROW_PITCH <= MENU_HEADER_HEIGHT
         {
             continue;
         }
@@ -423,7 +424,7 @@ pub(crate) fn menu_draw(
         && x_offset + screen_width - 4 < clip_right
         && x_offset + screen_width > clip_x
     {
-        let first = ((scroll / 256) / ROW_HEIGHT as i32) as u16;
+        let first = ((scroll / 256) / ROW_PITCH as i32) as u16;
         let thumb_height = track * rows / visible_count;
         let maximum_first = visible_count - rows;
         let thumb_y = MENU_HEADER_HEIGHT + ((track - thumb_height) * first / maximum_first) as i16;
