@@ -87,6 +87,28 @@ impl CustomPage for MyPage {
 }
 ```
 
+## 本地仿真（宿主机）
+
+`sim` 特性把画布接到 eframe 窗口，不用板子也能看效果。库本体仍是 `#![no_std]`，
+不开这个特性时 `eframe` / `png` 都不会被拉进来：
+
+```bash
+cd kk-ui-rs
+cargo run --example sim --features sim          # 窗口：上方画布，下方 上/下/确定/截图
+cargo run --example sim --features sim -- --snapshot out.png --steps 40
+```
+
+窗口固定大小、内容居中，下方一排大号按钮（上/下/确定/截图）与键盘等价：
+`↑`/`←`/`k`/`h` 上、`↓`/`→`/`j`/`l` 下、回车确定、`S` 存一张 `sim-<n>.png`
+（整数倍放大的 8 位灰度 PNG）。窗口文字用 `examples/sim/assets/fonts/` 里的
+Noto Sans CJK SC。
+无头模式注入 `Autoplay` 走 `--steps` 拍（每拍 500 ms）后存一张截图，适合没有
+窗口的机器上调试。
+
+`examples/sim/app.rs` 与 `examples/sim/assets/` 是 `../ili9341-lcd-kkui/src/` 里
+应用描述表与字体图标的副本（一份只依赖 `kk_ui` 与 `core` 的表，两边各带一份，
+换字体或改 Demo 时记得同步）。
+
 ## 许可证
 
 跟随上游 KK_UI，MIT。字体与图标资源来自上游标准 Demo

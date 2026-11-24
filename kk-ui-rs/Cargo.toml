@@ -10,3 +10,13 @@ name = "kk_ui"
 
 # 库本体只用 core，不依赖任何外部 crate，可以在主机上直接跑渲染测试。
 [dependencies]
+# 宿主机的本地仿真窗口与截图编码，只有 `sim` 特性才拉进来。
+eframe = { workspace = true, optional = true }
+png = { workspace = true, optional = true }
+
+[features]
+sim = ["dep:eframe", "dep:png"]
+
+[[example]]
+name = "sim"
+required-features = ["sim"]

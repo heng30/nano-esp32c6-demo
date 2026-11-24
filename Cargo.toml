@@ -165,4 +165,12 @@ lvgl-rust = { version = "0.3", default-features = false, features = [
   "use-string-functions",
 ] }
 
+# 只给 kk-ui-rs 的本地仿真用（宿主机 std 窗口），ESP 例程不引用。
+png = { version = "0.18", default-features = false }
+eframe = { version = "0.37", default-features = false, features = [
+  "x11",
+  "glow",
+  "wayland",
+] }
+
 kk-ui-rs = { path = "kk-ui-rs" }
