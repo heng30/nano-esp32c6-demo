@@ -136,6 +136,30 @@ if let Some(bitmap) = kk_ui::cjk::GLYPHS.glyph('中') {
 全角字符、制表符），编进库约 245 KB。`assets/fonts/unifont.bdf` 是仓库内副本
 （9 MB），没装 Unifont 的机器也能构建；不开 `cjk-fonts` 时这部分完全不参与编译。
 
+## 资源工具 `kkui-tool`
+
+包内唯一的可执行程序（`bin/kkui-tool.rs`），它依赖的 `clap` / `image` 归 `tool` 特性，
+所以安装要带上特性：`cargo install --path . --features tool`（本地跑用
+`cargo run --bin kkui-tool --features tool --`）。
+
+```text
+kkui-tool font <目录或文件>... [--out font]  # 采集字符，产出 3 张字库表 + text.txt
+kkui-tool icon <图片> [--size 32] [-o 输出]   # png/jpeg/webp → XBM 位图（raw .bin）
+```
+
+`font` 递归读目录下所有能按 UTF-8 解码的文件（跳过 `target`/`.git`/`node_modules`），
+把用到的字符按码点升序从 `assets/fonts/unifont.bdf` 里抠出来，产出与 `build.rs` 同构的
+三张平行表，`include_bytes!` 后即可组成 `Glyphs` 交给 `set_font`；同目录的 `text.txt`
+是采集到的字符清单，还能再作为输入喂回来。BDF 在编译期就 `include_bytes!` 进了工具
+（装出来的二进制约 21 MB），所以不需要传字库路径，也不依赖 `cjk-fonts` 特性；能取到哪些
+码点由 BDF 决定，取不到的字符会被列出来但不入表。
+
+`icon` 把图缩到 `--size` 见方再二值化（深色算点亮、透明算熄灭），按 `Frame::draw_xbm`
+的位序写 raw 二进制：低位在前、每行 8 像素对齐，32×32 正好 128 字节。
+
+本目录的 `Makefile` 把这两步串起来了：`make` 先给 `examples/sim` 生成字库再跑模拟器，
+`make font` 只生成字库，`make snapshot` 出无头截图。
+
 ## 本地模拟器（宿主机）
 
 `sim` 特性编译出一个小框架（`kk_ui::sim`，源码在 `src/sim.rs`），把 1 bit 画布显示到

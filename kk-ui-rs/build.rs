@@ -5,19 +5,17 @@
 //! BDF 是仓库自带资源 `assets/fonts/unifont.bdf`，不依赖本机装的字体。
 
 use std::{
-    collections::BTreeMap,
     env, fs,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufWriter, Write},
     path::{Path, PathBuf},
 };
 
-/// 字形边长（像素）。
-const GLYPH_SIZE: usize = 16;
-/// 一个字模的字节数：16 行 × 每行 2 字节。
-const GLYPH_LEN: usize = GLYPH_SIZE * 2;
+// 抠字模的代码与 bin/kkui-tool.rs 共用，见 build/bdf.rs。
+include!("build/bdf.rs");
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/bdf.rs");
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_CJK_FONTS");
     if env::var_os("CARGO_FEATURE_CJK_FONTS").is_none() {
         return;
@@ -32,8 +30,9 @@ fn main() {
         bdf.display()
     );
 
+    let data = fs::read(&bdf).unwrap_or_else(|e| panic!("failed to read {}: {e}", bdf.display()));
     let wanted = wanted_codepoints();
-    let glyphs = parse_bdf(&bdf, &wanted);
+    let glyphs = parse_bdf(&data, &wanted);
     if glyphs.len() != wanted.len() {
         println!(
             "cargo:warning={} of {} glyphs missing from {}",
@@ -73,14 +72,6 @@ fn main() {
         glyphs.len(),
         glyphs.len() * (GLYPH_LEN + 3) / 1024
     );
-}
-
-/// 一个字形：定长点阵与它的原始像素宽度。
-struct BdfGlyph {
-    /// 16×16 点阵，行内 MSB 在左。
-    bitmap: [u8; GLYPH_LEN],
-    /// BDF 里的字形宽度（像素），半角 8、全角 16。
-    width: u8,
 }
 
 /// 需要的码点：ASCII 与 GB2312 符号区、汉字区，升序去重。
@@ -123,64 +114,4 @@ fn keeps(cp: u32) -> bool {
         | 0x4E00..=0x9FFF   // 汉字
         | 0xFF00..=0xFFEF   // 全角 ASCII 与标点
     )
-}
-
-/// 从 BDF 里取出 `wanted` 中的字形，返回 码点 → 点阵。
-fn parse_bdf(path: &Path, wanted: &[u16]) -> BTreeMap<u16, BdfGlyph> {
-    let file = fs::File::open(path).expect("failed to open bdf");
-    let mut glyphs = BTreeMap::new();
-
-    let mut encoding = None;
-    let mut width = GLYPH_SIZE;
-    let mut rows: Vec<u16> = Vec::with_capacity(GLYPH_SIZE);
-    let mut in_bitmap = false;
-
-    for line in BufReader::new(file).lines() {
-        let line = line.expect("failed to read bdf");
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("ENCODING") {
-            encoding = rest.trim().parse().ok();
-        } else if let Some(rest) = line.strip_prefix("BBX") {
-            width = rest
-                .split_whitespace()
-                .next()
-                .and_then(|w| w.parse().ok())
-                .unwrap_or(GLYPH_SIZE);
-        } else if line.starts_with("BITMAP") {
-            rows.clear();
-            in_bitmap = true;
-        } else if line == "ENDCHAR" {
-            if let Some(cp) = encoding
-                && wanted.binary_search(&cp).is_ok()
-            {
-                glyphs.insert(
-                    cp,
-                    BdfGlyph {
-                        bitmap: to_glyph(&rows, width),
-                        width: width.min(GLYPH_SIZE) as u8,
-                    },
-                );
-            }
-            encoding = None;
-            in_bitmap = false;
-        } else if in_bitmap && let Ok(value) = u16::from_str_radix(line, 16) {
-            rows.push(value);
-        }
-    }
-
-    glyphs
-}
-
-/// 把 BDF 的每行整数拼成 16 位宽的定长点阵，窄字形靠左对齐。
-fn to_glyph(rows: &[u16], width: usize) -> [u8; GLYPH_LEN] {
-    let mut glyph = [0u8; GLYPH_LEN];
-    for (row, value) in rows.iter().take(GLYPH_SIZE).enumerate() {
-        let value = if width < GLYPH_SIZE {
-            value << (GLYPH_SIZE - width)
-        } else {
-            *value
-        };
-        glyph[row * 2..row * 2 + 2].copy_from_slice(&value.to_be_bytes());
-    }
-    glyph
 }

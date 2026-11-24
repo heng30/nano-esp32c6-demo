@@ -45,12 +45,15 @@ nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1
 - **版本只在根 `Cargo.toml` 出现**，成员里一律 `xx.workspace = true`，不写版本号；
   根里版本号只保留两位（`"1.2"` 而非 `"1.2.2"`），唯一例外是 `esp-radio` 这种只有预发布的
   （`"1.0.0-beta.1"` 写全）。
+  **例外：`kk-ui-rs` 将要独立发布到 crates.io**，它的依赖版本与 `version`/`edition` 都写死在
+  自己的 `Cargo.toml` 里，不用 `workspace = true`；它用到的 `png`/`eframe`/`clap`/`image`
+  也不在根 `[workspace.dependencies]` 登记，升级只改 `kk-ui-rs/Cargo.toml` 一处。
 - **全部依赖 `default-features = false`**，特性按实际用到的最小集合显式列出。
 - 绝大多数依赖各成员需要同一套特性，直接写根里；**只有 `esp-hal` / `esp-rtos` / `esp-radio` /
   `esp-alloc` 允许成员用 `features = [...]` 追加**——它们的并集会把 WiFi+BLE 整套塞进纯显示的
   例程，还必须带 `esp-alloc` 全局分配器。新增成员时先看它到底要不要 `esp-radio`。
 - `version` / `edition` 由根的 `[workspace.package]` 提供，成员写 `version.workspace = true`、
-  `edition.workspace = true`。
+  `edition.workspace = true`（`kk-ui-rs` 除外，见上）。
 - `[profile.*]` 只在根生效，成员里写会被忽略（cargo 会警告）；改编译选项去根 `Cargo.toml`。
 - 工具链只在根 `rust-toolchain.toml` 声明（`channel = "stable"`，当前落到 `1.100.0`），
   成员目录不再各自一份。

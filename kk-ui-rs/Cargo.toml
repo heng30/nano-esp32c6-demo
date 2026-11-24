@@ -3,26 +3,47 @@ name = "kk-ui-rs"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+default-run = "kkui-tool"
 description = "KK_UI 单色菜单 UI 的 Rust 移植：页式 1 bit 画布 + 页面/菜单/弹窗运行时，画布尺寸由应用给定"
 
 [lib]
 name = "kk_ui"
 
-[features]
-# 把仓库自带的 unifont 里抠出的 GB2312 汉字与中文标点嵌进库，见 build.rs。
-cjk-fonts = []
-sim = ["dep:eframe", "dep:png"]
+[[bin]]
+name = "kkui-tool"
+path = "bin/kkui-tool.rs"
+required-features = ["tool"]
 
 [[example]]
 name = "sim"
-required-features = ["sim", "cjk-fonts"]
+required-features = ["sim"]
 
-# 库本体只用 core，不依赖任何外部 crate，可以在主机上直接跑渲染测试。
+[features]
+cjk-fonts = []
+sim = ["dep:eframe", "dep:png"]
+tool = ["dep:clap", "dep:image"]
+
 [dependencies]
-# 宿主机的本地仿真窗口与截图编码，只有 `sim` 特性才拉进来。
-png = { workspace = true, optional = true }
-eframe = { workspace = true, optional = true }
+png = { version = "0.18", default-features = false, optional = true }
+eframe = { version = "0.37", default-features = false, features = [
+  "x11",
+  "glow",
+  "wayland",
+], optional = true }
+clap = { version = "4", default-features = false, optional = true, features = [
+  "std",
+  "help",
+  "usage",
+  "derive",
+  "error-context",
+] }
+image = { version = "0.25", default-features = false, optional = true, features = [
+  "png",
+  "jpeg",
+  "webp",
+] }
 
-# 只在生成中文点阵时用到（build.rs）。
 [build-dependencies]
-encoding_rs.workspace = true
+encoding_rs = { version = "0.8", default-features = false, features = [
+  "alloc",
+] }
