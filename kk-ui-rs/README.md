@@ -69,7 +69,7 @@ loop {
 }
 ```
 
-应用描述表（`App`）是编译期常量：路由、页面、绑定、字体与文案，结构对应 C 版
+应用描述表（`App`）是编译期常量：路由、页面、绑定与文案，结构对应 C 版
 `KK_UI_App`。示例见 `../ili9341-lcd-kkui/src/app.rs`（移植自官方标准 Demo）。
 
 自绘页实现 `CustomPage`：
@@ -87,31 +87,44 @@ impl CustomPage for MyPage {
 }
 ```
 
-## 内嵌中文点阵（`cjk-fonts`）
+## 字体：全局缓存 + 内嵌点阵（`cjk-fonts`）
 
-仓库自带 GNU Unifont，`build.rs` 在编译期从 `assets/fonts/unifont.bdf` 里抠出 GB2312
-汉字与中文标点写进 `OUT_DIR`，启用特性即可直接用，不必自己生成字模：
+整个 UI 只有一个当前字体，放在库内全局缓存里，页面与弹窗不再各自持有：
+`Frame::draw_text` / `Frame::text_width` 直接读它。设置函数在程序初始化时调用一次：
+
+```rust
+// 启用 cjk-fonts 特性时默认就是内嵌点阵，初始化无需任何调用。
+// 要换成自己的 u8g2 字库（LEDFont / bdfconv 原格式）：
+kk_ui::set_font(&MY_FONT);
+// 要换回内嵌点阵：
+kk_ui::set_builtin_cjk();
+```
+
+不开 `cjk-fonts` 时初始未设置字体，文字绘制为空操作，须先 `set_font`。
+
+`cjk-fonts` 的数据由 `build.rs` 在编译期从仓库自带的 `assets/fonts/unifont.bdf`
+里抠出，写进 `OUT_DIR` 后嵌进库：GB2312 常用汉字、中文标点、全角字符与制表符，
+以及全部 ASCII 大小写字母和常用英文符号，所以中英混排文本（`FPS: 80%`、
+`返回Back`）可以直接画：
 
 ```bash
 cargo build --features cjk-fonts
 ```
 
 ```rust
-use kk_ui::{Frame, cjk};
-
 let mut frame = Frame::new(&mut buffer, 128, 64);
-cjk::draw_text(&mut frame, 0, 8, "屏幕亮度：80%");
-let width = cjk::text_width("设置");
+// Frame 的文字接口走全局字体，也可以直接用 cjk 模块。
+frame.draw_text(0, 0, "屏幕亮度：80% FPS: 30");
 
 if let Some(bitmap) = cjk::glyph('中') {
     // 16×16 点阵，行内 MSB 在左，每行 2 字节
 }
 ```
 
-字形固定 16×16：全角 16 px 步进，半角（数字字母以及全角区里的窄字）按 BDF 原始宽度。
-码点二分查找，字库约 7075 个字形（6763 个 GB2312 汉字 + 中文标点、全角字符、制表符），
-编进库约 221 KB。`assets/fonts/unifont.bdf` 是仓库内副本（9 MB），没装 Unifont 的机器
-也能构建；不开 `cjk-fonts` 时这部分完全不参与编译。
+字形固定 16×16：全角 16 px 步进，半角（ASCII 及全角区里的窄字）按 BDF 原始宽度。
+码点二分查找，字库约 7170 个字形（95 个 ASCII + 6763 个 GB2312 汉字 + 中文标点、
+全角字符、制表符），编进库约 245 KB。`assets/fonts/unifont.bdf` 是仓库内副本
+（9 MB），没装 Unifont 的机器也能构建；不开 `cjk-fonts` 时这部分完全不参与编译。
 
 ## 本地模拟器（宿主机）
 
@@ -136,10 +149,10 @@ kk_ui::sim::run(
 无头调试时不必开窗口。
 
 `examples/sim/` 是完整例子：`app.rs` 与 `assets/` 是 `../ili9341-lcd-kkui/src/` 里
-应用描述表与字体图标的副本（改一边记得同步另一边）。无头模式
-`cargo run --example sim --features sim -- --snapshot out.png --steps 40` 让 Demo
-自己走 40 拍再落盘。
+应用描述表与图标的副本（改一边记得同步另一边）。无头模式
+`cargo run --example sim --features "sim cjk-fonts" -- --snapshot out.png --steps 40`
+让 Demo 自己走 40 拍再落盘。
 
 ## 许可证
 
-跟随上游 KK_UI，MIT。字体与图标资源来自上游标准 Demo
+跟随上游 KK_UI，MIT。图标资源来自上游标准 Demo

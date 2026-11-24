@@ -5,7 +5,7 @@
 //! 改了一边记得同步另一边。
 
 use kk_ui::{
-    App, BoolBinding, ConfirmDesc, CustomPage, DrawMode, EventId, Font, Fonts, Frame, HomeItem,
+    App, BoolBinding, ConfirmDesc, CustomPage, DrawMode, EventId, Frame, HomeItem,
     HomePage, InfoPage, InfoRow, InputAction, InputEvent, IntBinding, ItemState, KEY_DOWN, KEY_OK,
     KkUi, MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Runtime, Shared, Text,
     Texts, draw_progress_bar,
@@ -61,13 +61,6 @@ pub const EVENT_DEMO_LOCK_CHANGED: EventId = 9;
 pub const EVENT_ADVANCED_ACTION: EventId = 10;
 /// 事件：弹出 Toast。
 pub const EVENT_SHOW_TOAST: EventId = 11;
-
-/// 首页标签字体。
-pub static FONT_HOME: Font = Font::new(include_bytes!("assets/font_home.bin"));
-/// 标题字体。
-pub static FONT_TITLE: Font = Font::new(include_bytes!("assets/font_title.bin"));
-/// 正文字体。
-pub static FONT_BODY: Font = Font::new(include_bytes!("assets/font_body.bin"));
 
 // 图标是 32×32 XBM，每个 128 字节。
 static ICON_SETTINGS: &[u8] = include_bytes!("assets/icon0.bin");
@@ -367,11 +360,6 @@ pub static APP: App = App {
     int_bindings: &INT_BINDINGS,
     bool_bindings: &BOOL_BINDINGS,
     confirm_descs: &CONFIRM_DESCS,
-    fonts: Fonts {
-        home: &FONT_HOME,
-        title: &FONT_TITLE,
-        body: &FONT_BODY,
-    },
     texts: Texts {
         return_text: "返回",
         cancel_text: "取消",
@@ -755,9 +743,8 @@ impl CustomPage for Wave {
         let frame: &mut Frame<'_> = ui.frame_mut();
         let (width, height) = (frame.width(), frame.height());
         frame.set_clip(clip_x, 0, clip_width, height as u16);
-        frame.set_font(&FONT_TITLE);
         frame.draw_text(4 + x_offset, 1, "波形");
-        frame.draw_text(width - 62 + x_offset, 1, "FPS:");
+        frame.draw_text(width - 68 + x_offset, 1, "FPS:");
         FPS_TEXT.with(|text| {
             frame.draw_text(width - 36 + x_offset, 1, text);
         });
@@ -777,9 +764,8 @@ impl CustomPage for Wave {
             }
             previous_y = y;
         }
-        frame.set_font(&FONT_BODY);
         PROGRESS_TEXT.with(|text| {
-            frame.draw_text(10 + x_offset, height - 28, text);
+            frame.draw_text(10 + x_offset, height - 32, text);
         });
         draw_progress_bar(
             frame,

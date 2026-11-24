@@ -54,10 +54,10 @@ pub(crate) const BOOL_VALUE_MS: u32 = 120;
 pub(crate) const TOAST_MS: u32 = 120;
 /// Q12 定点数的 1.0。
 pub(crate) const Q12_ONE: u16 = 4096;
-/// 菜单标题栏高度。
-pub(crate) const MENU_HEADER_HEIGHT: i16 = 14;
-/// 信息页标题栏高度。
-pub(crate) const INFO_HEADER_HEIGHT: i16 = 16;
+/// 菜单标题栏高度：1 px 顶部留白 + 16 px 字形 + 1 px 底部留白。
+pub(crate) const MENU_HEADER_HEIGHT: i16 = 18;
+/// 信息页标题栏高度：同菜单，容纳 16 px 字形。
+pub(crate) const INFO_HEADER_HEIGHT: i16 = 18;
 /// 列表行高。
 pub(crate) const ROW_HEIGHT: i16 = 16;
 /// 页面切换时旧页面的视差位移。

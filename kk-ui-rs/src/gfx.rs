@@ -5,7 +5,7 @@
 //! 因此同一个库可以直接跑在任意分辨率的屏上。
 //! 坐标一律是有符号 `i16`，裁剪窗口是半开区间 `[x0, x1) × [y0, y1)`。
 
-use crate::font::Font;
+use crate::font;
 
 /// 前景像素如何作用于帧缓冲。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -30,12 +30,6 @@ pub struct Frame<'a> {
     clip: (i16, i16, i16, i16),
     /// 后续图元的前景处理方式。
     mode: DrawMode,
-    /// 当前字体；`None` 时文字绘制为空操作。
-    font: Option<&'static Font>,
-    /// 当前字体的上升量（像素）。
-    ascent: i16,
-    /// 当前字体的下降量（像素，负值）。
-    descent: i16,
 }
 
 impl<'a> Frame<'a> {
@@ -51,9 +45,6 @@ impl<'a> Frame<'a> {
             height,
             clip: (0, 0, width, height),
             mode: DrawMode::Set,
-            font: None,
-            ascent: 0,
-            descent: 0,
         }
     }
 
@@ -136,23 +127,6 @@ impl<'a> Frame<'a> {
     /// 当前裁剪窗口 `(x0, y0, x1, y1)`。
     pub fn clip(&self) -> (i16, i16, i16, i16) {
         self.clip
-    }
-
-    /// 设置文字字体，同时刷新上升量与下降量。
-    pub fn set_font(&mut self, font: &'static Font) {
-        self.font = Some(font);
-        self.ascent = font.ascent();
-        self.descent = font.descent();
-    }
-
-    /// 当前字体上升量（像素）。
-    pub fn ascent(&self) -> i16 {
-        self.ascent
-    }
-
-    /// 当前字体下降量（像素，负值）。
-    pub fn descent(&self) -> i16 {
-        self.descent
     }
 
     /// 按绘图模式写入一个源像素。
@@ -474,17 +448,14 @@ impl<'a> Frame<'a> {
         }
     }
 
-    /// 绘制 UTF-8 单行字符串，返回累计 advance。
+    /// 按全局字体绘制 UTF-8 单行字符串，返回累计步进宽度；未设置字体时为空操作。
     pub fn draw_text(&mut self, x: i16, y: i16, text: &str) -> i16 {
-        let Some(font) = self.font else {
-            return 0;
-        };
-        font.draw_text(self, x, y, text)
+        font::draw_text(self, x, y, text)
     }
 
-    /// 计算字符串可见像素宽度。
+    /// 按全局字体计算字符串可见像素宽度。
     pub fn text_width(&self, text: &str) -> u16 {
-        self.font.map(|font| font.text_width(text)).unwrap_or(0)
+        font::text_width(text)
     }
 
     /// 半开包围盒与裁剪窗口求交；有交集时把包围盒收缩到窗口内。

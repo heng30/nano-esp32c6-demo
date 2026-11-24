@@ -318,12 +318,10 @@ pub(crate) fn menu_draw(
     let content_height = rows * ROW_HEIGHT as u16;
     let screen_width = rt.frame.width();
 
-    rt.frame.set_font(app.fonts.title);
     rt.frame
         .set_clip(clip_x, 0, clip_width, MENU_HEADER_HEIGHT as u16);
     utils::draw_centered(&mut rt.frame, x_offset, 1, screen_width as u16, page.title);
 
-    rt.frame.set_font(app.fonts.body);
     rt.frame
         .set_clip(clip_x, MENU_HEADER_HEIGHT, clip_width, content_height);
     for visible in 0..visible_count {

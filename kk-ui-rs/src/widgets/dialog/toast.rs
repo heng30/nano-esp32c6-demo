@@ -52,7 +52,6 @@ pub(crate) fn draw(rt: &mut Runtime<'_>) {
     if !rt.toast.visible || super::dialog_active(rt) {
         return;
     }
-    rt.frame.set_font(rt.app.fonts.body);
     let screen_width = rt.frame.width();
     let screen_height = rt.frame.height();
     let mut width = rt.frame.text_width(rt.toast.text) + 12;
@@ -64,13 +63,13 @@ pub(crate) fn draw(rt: &mut Runtime<'_>) {
         width += 1;
     }
     let x = (screen_width - width as i16) / 2;
-    let y = screen_height - (16 * rt.toast.phase_q12 as i32 / Q12_ONE as i32) as i16;
-    rt.frame.set_clip(x, y, width, 16);
+    let y = screen_height - (18 * rt.toast.phase_q12 as i32 / Q12_ONE as i32) as i16;
+    rt.frame.set_clip(x, y, width, 18);
     // 先清空整个包围盒，圆角外的像素才不会带着底下的页面字形。
     rt.frame.set_draw_mode(DrawMode::Clear);
-    rt.frame.draw_box(x, y, width, 16);
+    rt.frame.draw_box(x, y, width, 18);
     rt.frame.set_draw_mode(DrawMode::Set);
-    rt.frame.draw_rbox(x, y, width, 16, 3);
+    rt.frame.draw_rbox(x, y, width, 18, 3);
     rt.frame.set_draw_mode(DrawMode::Clear);
     draw_centered(&mut rt.frame, x, y + 1, width, rt.toast.text);
     rt.frame.set_draw_mode(DrawMode::Set);

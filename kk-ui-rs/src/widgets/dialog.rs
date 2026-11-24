@@ -11,11 +11,11 @@ mod toast;
 
 use crate::gfx::{DrawMode, Frame};
 use crate::model::{EVENT_NONE, EventId, InputAction, InputEvent, PageType};
-use crate::widgets::utils;
 use crate::runtime::{
     BOOL_VALUE_MS, DIALOG_CLOSE_MS, DIALOG_OPEN_MS, DialogFocus, FOCUS_MS, INT_VALUE_MS,
     MENU_HEADER_HEIGHT, OverlayType, Q12_ONE, Runtime, Status, ease_q12, lerp_q12, round_q8,
 };
+use crate::widgets::utils;
 
 pub(crate) use bool_editor::open as open_bool;
 pub(crate) use confirm::open as open_confirm;
@@ -210,8 +210,7 @@ fn apply_value(rt: &mut Runtime, next: i32, increase: bool, now: u32) {
 /// 弹窗标题与标题下的分隔线。
 pub(crate) fn draw_title(rt: &mut Runtime<'_>, layout: &Layout, title: &str) {
     utils::draw_centered(&mut rt.frame, 10 + layout.dx, 3 + layout.dy, 108, title);
-    rt.frame
-        .draw_hline(12 + layout.dx, 19 + layout.dy, 104);
+    rt.frame.draw_hline(12 + layout.dx, 19 + layout.dy, 104);
 }
 
 /// 底部按钮行；`cancel` 为 `false` 时只画居中的确定键。
@@ -366,8 +365,7 @@ pub(crate) fn draw(rt: &mut Runtime<'_>) {
     let screen_width = rt.frame.width();
     let target_y = dy as i32 + 1;
     let x = (dx as i32 + 3 * p / one) as i16;
-    let y =
-        (rt.overlay.origin_y as i32 + (target_y - rt.overlay.origin_y as i32) * p / one) as i16;
+    let y = (rt.overlay.origin_y as i32 + (target_y - rt.overlay.origin_y as i32) * p / one) as i16;
     let width = (118 - 2 * p / one).min(screen_width as i32 - 2 * dx as i32 + 1) as i16;
     let height = (16 + 45 * p / one) as i16;
     {
@@ -390,7 +388,6 @@ pub(crate) fn draw(rt: &mut Runtime<'_>) {
         height,
     };
     layout.apply_clip(&mut rt.frame);
-    rt.frame.set_font(rt.app.fonts.body);
     match rt.overlay.kind {
         OverlayType::Confirm => confirm::draw(rt, &layout),
         OverlayType::Int => int_editor::draw(rt, &layout),

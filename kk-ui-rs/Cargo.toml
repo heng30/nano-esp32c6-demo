@@ -8,20 +8,20 @@ description = "KK_UI 单色菜单 UI 的 Rust 移植：页式 1 bit 画布 + 页
 [lib]
 name = "kk_ui"
 
-# 库本体只用 core，不依赖任何外部 crate，可以在主机上直接跑渲染测试。
-[dependencies]
-# 宿主机的本地仿真窗口与截图编码，只有 `sim` 特性才拉进来。
-eframe = { workspace = true, optional = true }
-png = { workspace = true, optional = true }
-
 [features]
-sim = ["dep:eframe", "dep:png"]
 # 把仓库自带的 unifont 里抠出的 GB2312 汉字与中文标点嵌进库，见 build.rs。
 cjk-fonts = []
+sim = ["dep:eframe", "dep:png"]
 
 [[example]]
 name = "sim"
-required-features = ["sim"]
+required-features = ["sim", "cjk-fonts"]
+
+# 库本体只用 core，不依赖任何外部 crate，可以在主机上直接跑渲染测试。
+[dependencies]
+# 宿主机的本地仿真窗口与截图编码，只有 `sim` 特性才拉进来。
+png = { workspace = true, optional = true }
+eframe = { workspace = true, optional = true }
 
 # 只在生成中文点阵时用到（build.rs）。
 [build-dependencies]

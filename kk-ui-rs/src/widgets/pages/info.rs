@@ -119,7 +119,6 @@ pub(crate) fn info_draw(
     clip_x: i16,
     clip_width: u16,
 ) {
-    let app = rt.app;
     let page = info_page(rt, &state);
     let header = info_header_height(page);
     let (screen_width, screen_height) = (rt.frame.width(), rt.frame.height());
@@ -135,14 +134,12 @@ pub(crate) fn info_draw(
     let mut draw_content = true;
 
     if header != 0 {
-        rt.frame.set_font(app.fonts.title);
         rt.frame.set_clip(clip_x, 0, clip_width, header as u16);
         utils::draw_centered(&mut rt.frame, x_offset, 1, screen_width as u16, page.title);
         rt.frame
             .draw_hline(x_offset, header - 1, (screen_width - 3) as u16);
         info_close_icon(&mut rt.frame, x_offset);
     }
-    rt.frame.set_font(app.fonts.body);
     if content_right > x_offset + screen_width - 3 {
         content_right = x_offset + screen_width - 3;
     }

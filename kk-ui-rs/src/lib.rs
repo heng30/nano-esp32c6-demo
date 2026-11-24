@@ -26,13 +26,15 @@ pub mod cjk;
 #[cfg(feature = "sim")]
 pub mod sim;
 
-pub use font::Font;
+#[cfg(feature = "cjk-fonts")]
+pub use font::set_builtin_cjk;
+
+pub use font::{Font, set_font};
 pub use gfx::{DrawMode, Frame};
 pub use model::{
-    App, BoolBinding, ConfirmDesc, EVENT_NONE, EventId, Fonts, HomeItem, HomePage, InfoPage,
-    InfoRow, Input, InputAction, InputEvent, InputSource, IntBinding, ItemState, KEY_DOWN, KEY_OK,
-    KEY_UP, MenuItem, MenuItemType, MenuPage, PAGE_NONE, PageId, PageRoute, PageType, Shared, Text,
-    Texts,
+    App, BoolBinding, ConfirmDesc, EVENT_NONE, EventId, HomeItem, HomePage, InfoPage, InfoRow,
+    Input, InputAction, InputEvent, InputSource, IntBinding, ItemState, KEY_DOWN, KEY_OK, KEY_UP,
+    MenuItem, MenuItemType, MenuPage, PAGE_NONE, PageId, PageRoute, PageType, Shared, Text, Texts,
 };
 pub use runtime::{CustomPage, ErrorInfo, KkUi, Runtime, Status};
 pub use widgets::{draw_focus, draw_progress_bar, draw_switch, utils::format_int};

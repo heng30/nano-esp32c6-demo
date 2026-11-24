@@ -14,7 +14,7 @@ rtt-target.workspace = true
 panic-rtt-target.workspace = true
 static_cell.workspace = true
 
-kk-ui-rs.workspace = true
+kk-ui-rs = { workspace = true, features = ["cjk-fonts"] }
 ili9341.workspace = true
 display-interface.workspace = true
 embedded-hal.workspace = true

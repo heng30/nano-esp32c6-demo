@@ -1,7 +1,7 @@
 //! 用 `kk_ui::sim` 在主机上跑 KK_UI 标准 Demo。
 //!
-//! 窗口：`cargo run --example sim --features sim`
-//! 无头截图：`cargo run --example sim --features sim -- --snapshot out.png --steps 40`
+//! 窗口：`cargo run --example sim --features "sim cjk-fonts"`
+//! 无头截图：`cargo run --example sim --features "sim cjk-fonts" -- --snapshot out.png --steps 40`
 //!
 //! 界面逻辑全在 `app.rs`（KK_UI 标准 Demo 的副本，字体图标在 `assets/`）；这里只把
 //! `KkUi` 接进模拟器闭包：每帧推进一次，再把画布交还给窗口。
@@ -79,6 +79,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn headless(ui: &mut KkUi<'_, app::Wave>, steps: u32, path: &Path) -> Result<(), Box<dyn Error>> {
     let mut autoplay = app::Autoplay::new();
     let mut now = 0;
+    // 先送一拍空输入，把去抖状态机的初始电平记为松开，首拍按键才不会被吞。
+    ui.update(now, Input { keys: 0, encoder_delta: 0 });
+    now += TICK_MS;
     for _ in 0..steps {
         let keys = autoplay.next_key(ui);
         let until = now + KEY_HOLD_MS;

@@ -1,11 +1,9 @@
-//! 应用描述表：路由、页面、绑定、字体与文案。
+//! 应用描述表：路由、页面、绑定与文案。
 //!
 //! 与 C 版一致，全部是编译期常量表，UI 运行时只读；应用的可变状态通过
 //! [`Shared`] 与 [`Text`] 这类共享单元暴露给表项。
 
 use core::cell::Cell;
-
-use crate::font::Font;
 
 /// 页面编号，`0` 表示无页面。
 pub type PageId = u16;
@@ -306,16 +304,6 @@ pub struct ConfirmDesc {
     pub cancelled_event: EventId,
 }
 
-/// 三档字体。
-pub struct Fonts {
-    /// 首页图标下方标签。
-    pub home: &'static Font,
-    /// 标题。
-    pub title: &'static Font,
-    /// 正文。
-    pub body: &'static Font,
-}
-
 /// 固定文案。
 pub struct Texts {
     /// 菜单里的返回项。
@@ -352,8 +340,6 @@ pub struct App {
     pub bool_bindings: &'static [BoolBinding],
     /// 确认框表。
     pub confirm_descs: &'static [ConfirmDesc],
-    /// 字体。
-    pub fonts: Fonts,
     /// 文案。
     pub texts: Texts,
 }

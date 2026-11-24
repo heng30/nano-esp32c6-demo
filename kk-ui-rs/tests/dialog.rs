@@ -4,8 +4,8 @@
 //! 于是编辑器按「确定」永远回到编辑态、确认框永远停在取消上。
 
 use kk_ui::{
-    App, BoolBinding, ConfirmDesc, CustomPage, Font, Fonts, Frame, Input, IntBinding, KEY_DOWN,
-    KEY_OK, KkUi, MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Shared, Texts,
+    App, BoolBinding, ConfirmDesc, CustomPage, Font, Frame, Input, IntBinding, KEY_DOWN, KEY_OK,
+    KkUi, MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Shared, Texts, set_font,
 };
 
 /// 测试用页面：首页 → 菜单。
@@ -102,11 +102,6 @@ static APP: App = App {
     int_bindings: &INT_BINDINGS,
     bool_bindings: &BOOL_BINDINGS,
     confirm_descs: &CONFIRMS,
-    fonts: Fonts {
-        home: &FONT,
-        title: &FONT,
-        body: &FONT,
-    },
     texts: Texts {
         return_text: "Back",
         cancel_text: "Cancel",
@@ -125,6 +120,8 @@ struct Panel {
 
 impl Panel {
     fn new() -> Self {
+        // 测试不开 cjk-fonts，默认无字体；装上假 u8g2 字体让布局走真实代码路径。
+        set_font(&FONT);
         let buffer: &'static mut [u8] =
             Box::leak(vec![0u8; Frame::buffer_len(WIDTH, HEIGHT)].into_boxed_slice());
         let mut ui = KkUi::new(&APP, NoPage, buffer, WIDTH, HEIGHT);

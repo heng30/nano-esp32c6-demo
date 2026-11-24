@@ -1,5 +1,5 @@
-//! 构建期从仓库自带的 GNU Unifont BDF 里抠出 GB2312 汉字与中文标点，写进 `OUT_DIR`，
-//! 由 `src/cjk.rs` 用 `include_bytes!` 嵌进库。
+//! 构建期从仓库自带的 GNU Unifont BDF 里抠出 ASCII 与 GB2312 汉字、中文标点，写进
+//! `OUT_DIR`，由 `src/cjk.rs` 用 `include_bytes!` 嵌进库。
 //!
 //! 只有启用 `cjk-fonts` 特性时才真正生成；没开特性时直接返回，库本体不带这些数据。
 //! BDF 是仓库自带资源 `assets/fonts/unifont.bdf`，不依赖本机装的字体。
@@ -32,11 +32,11 @@ fn main() {
         bdf.display()
     );
 
-    let wanted = gb2312_codepoints();
+    let wanted = wanted_codepoints();
     let glyphs = parse_bdf(&bdf, &wanted);
     if glyphs.len() != wanted.len() {
         println!(
-            "cargo:warning={} of {} GB2312 glyphs missing from {}",
+            "cargo:warning={} of {} glyphs missing from {}",
             wanted.len() - glyphs.len(),
             wanted.len(),
             bdf.display()
@@ -54,8 +54,11 @@ fn main() {
     );
     for cp in &wanted {
         if let Some(glyph) = glyphs.get(cp) {
-            font.write_all(&glyph.bitmap).expect("failed to write glyph");
-            widths.write_all(&[glyph.width]).expect("failed to write width");
+            font.write_all(&glyph.bitmap)
+                .expect("failed to write glyph");
+            widths
+                .write_all(&[glyph.width])
+                .expect("failed to write width");
             codepoints
                 .write_all(&cp.to_le_bytes())
                 .expect("failed to write codepoint");
@@ -80,13 +83,13 @@ struct BdfGlyph {
     width: u8,
 }
 
-/// GB2312 符号区与汉字区里的码点，升序去重。
+/// 需要的码点：ASCII 与 GB2312 符号区、汉字区，升序去重。
 ///
 /// 符号区（0xA1–0xA9）盖住中文标点、全角 ASCII、序号、制表符等；汉字区
 /// （0xB0–0xF7）是 6763 个常用字。两区在 GBK 与 GB2312 下编码一致，用
-/// `encoding_rs::GBK` 解码即可，不必自带码表。
-fn gb2312_codepoints() -> Vec<u16> {
-    let mut codepoints = Vec::with_capacity(7500);
+/// `encoding_rs::GBK` 解码即可，不必自带码表。ASCII 直接按单字节区间列出。
+fn wanted_codepoints() -> Vec<u16> {
+    let mut codepoints: Vec<u16> = (0x0020..=0x007E).collect();
     for hi in 0xA1..=0xF7u8 {
         for lo in 0xA1..=0xFEu8 {
             let bytes = [hi, lo];

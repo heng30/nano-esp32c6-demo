@@ -29,7 +29,6 @@ fn home_delta(index: usize, selected: u16, count: u16) -> i16 {
 
 /// 选中标签的高亮框宽度，Q8。
 fn home_label_width_q8(rt: &mut Runtime, page: &'static HomePage, selected: u16) -> i32 {
-    rt.frame.set_font(rt.app.fonts.home);
     let label = page.items[selected as usize].label;
     let limit = home_label_limit(rt);
     let mut width = rt.frame.text_width(label) as i32 + 12;
@@ -42,7 +41,6 @@ fn home_label_width_q8(rt: &mut Runtime, page: &'static HomePage, selected: u16)
 
 /// 相邻标签的横向间距。
 fn home_text_spacing(rt: &mut Runtime, page: &'static HomePage) -> i16 {
-    rt.frame.set_font(rt.app.fonts.home);
     let limit = home_label_limit(rt).max(0) as u16;
     let mut maximum = 0u16;
     for item in page.items {
@@ -125,7 +123,6 @@ pub(crate) fn home_draw(
     clip_x: i16,
     clip_width: u16,
 ) {
-    let app = rt.app;
     let page = home_page(rt, &state);
     let clip_right = clip_x + clip_width as i16;
     let (screen_width, screen_height) = (rt.frame.width(), rt.frame.height());
@@ -134,7 +131,6 @@ pub(crate) fn home_draw(
 
     rt.frame
         .set_clip(clip_x, 0, clip_width, screen_height as u16);
-    rt.frame.set_font(app.fonts.home);
     let (icon_offset_q8, label_width_q8) = if is_current && rt.home_anim.active {
         let p = ease_q12(rt.last_update.wrapping_sub(rt.home_anim.started), HOME_MS);
         (

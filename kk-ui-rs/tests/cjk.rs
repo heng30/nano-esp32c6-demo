@@ -19,9 +19,18 @@ fn common_han_and_punctuation_are_embedded() {
 }
 
 #[test]
+fn ascii_letters_and_symbols_are_embedded() {
+    // ASCII 大小写与常用符号（含空格）都在字库里，中英混排可以直接画。
+    for c in ['A', 'z', '0', '%', ':', ' ', '!', '~'] {
+        assert!(cjk::glyph(c).is_some(), "missing ascii glyph: {c}");
+    }
+    assert!(cjk::width('A').is_some() && cjk::width('A').unwrap() <= 8, "ascii is half width");
+}
+
+#[test]
 fn missing_characters_return_none() {
-    assert!(cjk::glyph('A').is_none(), "embedded table is GB2312 only");
-    assert!(cjk::width('\u{1F600}').is_none(), "emoji is out of range");
+    assert!(cjk::glyph('\u{1F600}').is_none(), "emoji is out of range");
+    assert!(cjk::glyph('\u{4DBF}').is_none(), "CJK ext-B is out of GB2312 range");
 }
 
 #[test]

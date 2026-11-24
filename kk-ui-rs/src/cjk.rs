@@ -1,4 +1,4 @@
-//! GB2312 常用汉字与中文标点的 16×16 点阵。
+//! ASCII 与 GB2312 常用汉字、中文标点的 16×16 点阵。
 //!
 //! 数据由 `build.rs` 从仓库自带的 `assets/fonts/unifont.bdf` 生成，落在 `OUT_DIR`，
 //! 不开 `cjk-fonts` 特性时整个模块不编译。字形按 Unicode 码点升序排列，查找用二分。
