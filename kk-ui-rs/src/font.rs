@@ -10,45 +10,70 @@ const HEADER_SIZE: usize = 23;
 
 /// 带静态数据的字体。
 pub struct Font {
+    /// 原始 u8g2 字体数据，含 23 字节头部。
     data: &'static [u8],
 }
 
 /// 从 23 字节头部解析出的全局压缩参数与索引偏移。
 struct Info {
+    /// 每个 0 游程长度的位宽。
     bits_per_0: u8,
+    /// 每个 1 游程长度的位宽。
     bits_per_1: u8,
+    /// 字形宽度字段位宽。
     bits_width: u8,
+    /// 字形高度字段位宽。
     bits_height: u8,
+    /// 字形水平偏移字段位宽。
     bits_x: u8,
+    /// 字形垂直偏移字段位宽。
     bits_y: u8,
+    /// 字形 advance 字段位宽。
     bits_advance: u8,
+    /// 字体最大字形高度（像素）。
     max_height: u8,
+    /// 参考高度相对基线的偏移（像素）。
     y_offset: i8,
+    /// 文本上升量（像素）。
     ascent_text: i8,
+    /// 文本下降量（像素，负值）。
     descent_text: i8,
+    /// 大写字母表相对头部的偏移（字节）。
     start_upper: u16,
+    /// 小写字母表相对头部的偏移（字节）。
     start_lower: u16,
+    /// Unicode 表相对头部的偏移（字节）。
     start_unicode: u16,
 }
 
 /// 字形度量与 RLE 位流位置。
 struct Glyph {
+    /// 字形宽度（像素）。
     width: u8,
+    /// 字形高度（像素）。
     height: u8,
+    /// 相对笔位的水平偏移（像素）。
     x_offset: i8,
+    /// 相对参考高度的垂直偏移（像素）。
     y_offset: i8,
+    /// 绘制后笔位前进量（像素）。
     advance: i8,
+    /// 位流读取位置，指向压缩位图开头。
     bits: BitReader,
 }
 
 /// LSB-first 位流读取位置。
 struct BitReader {
+    /// 位流数据。
     data: &'static [u8],
+    /// 当前字节下标。
     index: usize,
+    /// 当前字节内的位偏移 0..8。
     bit: u8,
 }
 
 impl BitReader {
+    /// 读取第 `index` 字节，越界按 0 处理。
     fn byte(&self, index: usize) -> u16 {
         self.data.get(index).copied().unwrap_or(0) as u16
     }
@@ -77,6 +102,7 @@ impl BitReader {
     }
 }
 
+/// 大端读取 16 位，越界按 0 处理。
 fn be16(data: &[u8], index: usize) -> u16 {
     let hi = data.get(index).copied().unwrap_or(0);
     let lo = data.get(index + 1).copied().unwrap_or(0);
@@ -89,6 +115,7 @@ impl Font {
         Self { data }
     }
 
+    /// 解析 23 字节头部。
     fn info(&self) -> Info {
         let data = self.data;
         Info {
@@ -123,6 +150,7 @@ impl Font {
     }
 
     /// 查找字形的压缩数据。
+    /// 查找字形压缩数据的起点下标；缺字返回 `None`。
     fn glyph_data(&self, codepoint: u16) -> Option<usize> {
         let data = self.data;
         let info = self.info();
@@ -165,8 +193,7 @@ impl Font {
     }
 
     /// 从字形数据开头解出度量字段。
-    fn decode(&self, index: usize) -> Option<Glyph> {
-        let info = self.info();
+    fn decode(&self, index: usize) -> Option<Glyph> {        let info = self.info();
         let mut bits = BitReader {
             data: self.data.get(index..)?,
             index: 0,
@@ -200,7 +227,7 @@ impl Font {
     #[allow(clippy::too_many_arguments)]
     fn draw_run(
         &self,
-        frame: &mut Frame,
+        frame: &mut Frame<'_>,
         x: i16,
         y: i16,
         glyph: &Glyph,
@@ -223,7 +250,7 @@ impl Font {
     }
 
     /// 解压一个字形的 0/1 游程并绘制。
-    fn render(&self, frame: &mut Frame, x: i16, y: i16, glyph: &Glyph) {
+    fn render(&self, frame: &mut Frame<'_>, x: i16, y: i16, glyph: &Glyph) {
         let info = self.info();
         let mut bits = BitReader {
             data: glyph.bits.data,
@@ -249,7 +276,7 @@ impl Font {
     }
 
     /// 绘制单行 UTF-8 字符串，返回累计 advance。
-    pub fn draw_text(&self, frame: &mut Frame, mut x: i16, y: i16, text: &str) -> i16 {
+    pub fn draw_text(&self, frame: &mut Frame<'_>, mut x: i16, y: i16, text: &str) -> i16 {
         let mut total = 0i32;
         for character in text.chars() {
             let codepoint = u16::try_from(character as u32).unwrap_or(0x0020);

@@ -3,10 +3,10 @@
 //! 本文件只依赖 `kk-ui-rs` 与 `core`，可以在主机上原样编入渲染测试工程。
 
 use kk_ui::{
-    App, BoolBinding, ConfirmDesc, CustomPage, DrawMode, EventId, Font, Fonts, Frame, HEIGHT,
-    HomeItem, HomePage, InfoPage, InfoRow, InputAction, InputEvent, IntBinding, ItemState, KkUi,
-    MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Runtime, Shared, Text, Texts,
-    WIDTH, draw_progress_bar,
+    App, BoolBinding, ConfirmDesc, CustomPage, DrawMode, EventId, Font, Fonts, Frame, HomeItem,
+    HomePage, InfoPage, InfoRow, InputAction, InputEvent, IntBinding, ItemState, KEY_DOWN, KEY_OK,
+    KkUi, MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Runtime, Shared, Text,
+    Texts, draw_progress_bar,
 };
 
 /// 页面：首页。
@@ -514,11 +514,92 @@ fn toast<C: CustomPage>(ui: &mut KkUi<C>, text: &'static str, duration: u32) {
     }
 }
 
-/// 屏幕亮度依赖 OLED 的对比度命令；本屏背光直接接 GND，只能如实上报不支持。
-fn report_brightness_unsupported<C: CustomPage>(ui: &mut KkUi<C>) {
+/// 本屏背光接 GND，没有对比度控制：把「屏幕亮度」标成禁用。
+fn mark_brightness_unsupported<C: CustomPage>(ui: &mut KkUi<C>) {
     BRIGHTNESS_STATE.set("不支持");
     ui.set_menu_item_state(PAGE_SETTINGS, 0, ItemState::Disabled);
+}
+
+/// 屏幕亮度依赖 OLED 的对比度命令；只能如实上报不支持。
+fn report_brightness_unsupported<C: CustomPage>(ui: &mut KkUi<C>) {
+    mark_brightness_unsupported(ui);
     toast(ui, "亮度不支持", 0);
+}
+
+/// 自动演示记录「哪些行打开过」用的页面槽位数，按页面编号取模。
+const AUTOPLAY_PAGES: usize = 8;
+
+/// 自动演示：每一拍按当前界面状态挑一个键，没人操作时自己走遍所有页面。
+///
+/// 刻意不用固定按键脚本：脚本会跟着界面状态漂移（某个条目被禁用后同样的按键
+/// 落到别的条目上），最后卡在同一个弹窗里打转。这里只看「弹窗开着吗 / 当前哪一页 /
+/// 选中第几行」，所以怎么漂都能自己走出来。
+pub struct Autoplay {
+    /// 下一个要进的首页图标下标。
+    target: u16,
+    /// 每个菜单页本轮已经打开过的行（按行号记位）。
+    opened: [u32; AUTOPLAY_PAGES],
+}
+
+impl Default for Autoplay {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Autoplay {
+    /// 从第一步开始。
+    pub const fn new() -> Self {
+        Self {
+            target: 0,
+            opened: [0; AUTOPLAY_PAGES],
+        }
+    }
+
+    /// 决定这一拍按哪个键。
+    pub fn next_key<C: CustomPage>(&mut self, ui: &KkUi<'_, C>) -> u8 {
+        // 弹窗一律用「确定」收尾：整数/开关编辑器两下确定提交并关闭，确认框与消息框一下就关。
+        if ui.dialog_open() {
+            return KEY_OK;
+        }
+        let page = ui.current_page();
+        if page == PAGE_HOME {
+            // 首页：先把选中项走到目标图标，再按「确定」进去；目标按顺序轮换。
+            if ui.selected_index() == self.target {
+                self.target = (self.target + 1) % HOME_ITEMS.len() as u16;
+                return KEY_OK;
+            }
+            return KEY_DOWN;
+        }
+        let items = menu_item_count(page);
+        if items == 0 {
+            // 信息页与自绘页都用「确定」返回。
+            return KEY_OK;
+        }
+        // 菜单：每一行先按「确定」打开一次，打开过就往下走；走到最后一行（虚拟返回项）
+        // 就清空标记并离开，下一轮进来又是逐个打开。
+        let selected = ui.selected_index();
+        let slot = page as usize % AUTOPLAY_PAGES;
+        if selected < items {
+            let bit = 1u32 << (selected & 31);
+            if self.opened[slot] & bit == 0 {
+                self.opened[slot] |= bit;
+                return KEY_OK;
+            }
+            return KEY_DOWN;
+        }
+        self.opened[slot] = 0;
+        KEY_OK
+    }
+}
+
+/// 菜单页的条目数（不含虚拟返回项）；非菜单页返回 0。
+pub fn menu_item_count(page: PageId) -> u16 {
+    match page {
+        PAGE_SETTINGS => SETTINGS_ITEMS.len() as u16,
+        PAGE_COMPONENTS => COMPONENT_ITEMS.len() as u16,
+        _ => 0,
+    }
 }
 
 /// 初始化应用状态；在 [`KkUi::init`] 之前或之后调用都可以。
@@ -530,6 +611,7 @@ pub fn reset<C: CustomPage>(ui: &mut KkUi<C>, now: u32) {
     for slot in &COMPONENT_STATES {
         slot.set(0);
     }
+    mark_brightness_unsupported(ui);
     UPTIME.set("0s");
     APP_STARTED_AT.set(now);
     INFO_UPDATED_AT.set(now);
@@ -618,11 +700,7 @@ impl CustomPage for Wave {
             }
             InputAction::Up => {
                 self.manual = true;
-                self.progress = if event.steps >= self.progress {
-                    0
-                } else {
-                    self.progress - event.steps
-                };
+                self.progress = self.progress.saturating_sub(event.steps);
                 update_progress_text(self.progress, self.manual);
                 ui.invalidate();
             }
@@ -672,24 +750,26 @@ impl CustomPage for Wave {
             self.draw_epoch = UPDATE_EPOCH.get();
             self.draw_count += 1;
         }
-        let frame: &mut Frame = ui.frame_mut();
-        frame.set_clip(clip_x, 0, clip_width, HEIGHT as u16);
+        let frame: &mut Frame<'_> = ui.frame_mut();
+        let (width, height) = (frame.width(), frame.height());
+        frame.set_clip(clip_x, 0, clip_width, height as u16);
         frame.set_font(&FONT_TITLE);
         frame.draw_text(4 + x_offset, 1, "波形");
-        frame.draw_text(52 + x_offset, 1, "FPS:");
+        frame.draw_text(width - 62 + x_offset, 1, "FPS:");
         FPS_TEXT.with(|text| {
-            frame.draw_text(78 + x_offset, 1, text);
+            frame.draw_text(width - 36 + x_offset, 1, text);
         });
-        frame.draw_line(117 + x_offset, 5, 123 + x_offset, 11);
-        frame.draw_line(123 + x_offset, 5, 117 + x_offset, 11);
+        frame.draw_line(width - 11 + x_offset, 5, width - 5 + x_offset, 11);
+        frame.draw_line(width - 5 + x_offset, 5, width - 11 + x_offset, 11);
         frame.set_draw_mode(DrawMode::Xor);
-        frame.draw_rbox(113 + x_offset, 1, 14, 14, 3);
+        frame.draw_rbox(width - 15 + x_offset, 1, 14, 14, 3);
         frame.set_draw_mode(DrawMode::Set);
         let wave: [i16; 16] = [0, -3, -7, -11, -7, -3, 0, 3, 7, 11, 7, 3, 0, -2, -1, 0];
-        let mut previous_y = 27;
-        for x in 0..WIDTH {
+        let base = height / 2;
+        let mut previous_y = base;
+        for x in 0..width {
             let index = (x as usize + self.phase as usize) & 15;
-            let y = 27 + wave[index] * 8 / 11;
+            let y = base + wave[index] * 8 / 11;
             if x != 0 {
                 frame.draw_line(x - 1 + x_offset, previous_y, x + x_offset, y);
             }
@@ -697,9 +777,17 @@ impl CustomPage for Wave {
         }
         frame.set_font(&FONT_BODY);
         PROGRESS_TEXT.with(|text| {
-            frame.draw_text(10 + x_offset, 40, text);
+            frame.draw_text(10 + x_offset, height - 28, text);
         });
-        draw_progress_bar(frame, 10 + x_offset, 55, 108, 8, self.progress, 100);
+        draw_progress_bar(
+            frame,
+            10 + x_offset,
+            height - 16,
+            (width - 20) as u16,
+            8,
+            self.progress,
+            100,
+        );
         frame.reset_clip();
     }
 }

@@ -17,6 +17,16 @@ pub const PAGE_NONE: PageId = 0;
 /// 无事件。
 pub const EVENT_NONE: EventId = 0;
 
+/// 按键位：上。
+pub const KEY_UP: u8 = 1 << 0;
+/// 按键位：下。
+pub const KEY_DOWN: u8 = 1 << 1;
+/// 按键位：确定。
+pub const KEY_OK: u8 = 1 << 2;
+
+/// 运行时文本缓冲的最大字节数，按 UTF-8 计；32 字节能放下 10 个汉字。
+pub const TEXT_LEN: usize = 32;
+
 /// 单核裸机下的共享可变值：只在 UI 主循环与其回调里访问。
 pub struct Shared<T>(Cell<T>);
 
@@ -40,12 +50,11 @@ impl<T: Copy> Shared<T> {
     }
 }
 
-/// 运行时文本缓冲的最大字节数，按 UTF-8 计。
-pub const TEXT_LEN: usize = 20;
-
 /// 长度受限的共享文本，供会变化的表项（如运行时间、亮度）使用。
 pub struct Text {
+    /// 内容字节，未用部分补 0。
     bytes: Cell<[u8; TEXT_LEN]>,
+    /// 有效字节数，按 UTF-8 计。
     len: Cell<u8>,
 }
 
@@ -53,6 +62,7 @@ pub struct Text {
 unsafe impl Sync for Text {}
 
 impl Default for Text {
+    /// 空文本。
     fn default() -> Self {
         Self::new()
     }
@@ -67,26 +77,27 @@ impl Text {
         }
     }
 
-    /// 由字符串字面量构造。
+    /// 由字符串字面量构造；超出 [`TEXT_LEN`] 的部分按字符边界截断。
     pub const fn literal(text: &str) -> Self {
         let source = text.as_bytes();
+        let len = fit(source);
         let mut bytes = [0u8; TEXT_LEN];
         let mut index = 0;
-        while index < source.len() && index < TEXT_LEN {
+        while index < len {
             bytes[index] = source[index];
             index += 1;
         }
         Self {
             bytes: Cell::new(bytes),
-            len: Cell::new(index as u8),
+            len: Cell::new(len as u8),
         }
     }
 
-    /// 覆盖内容；超出 [`TEXT_LEN`] 的部分被截断。
+    /// 覆盖内容；超出 [`TEXT_LEN`] 的部分按字符边界截断。
     pub fn set(&self, text: &str) {
         let source = text.as_bytes();
         let mut bytes = [0u8; TEXT_LEN];
-        let len = source.len().min(TEXT_LEN);
+        let len = fit(source);
         bytes[..len].copy_from_slice(&source[..len]);
         self.bytes.set(bytes);
         self.len.set(len as u8);
@@ -100,12 +111,18 @@ impl Text {
     }
 }
 
-/// 按键位：上。
-pub const KEY_UP: u8 = 1 << 0;
-/// 按键位：下。
-pub const KEY_DOWN: u8 = 1 << 1;
-/// 按键位：确定。
-pub const KEY_OK: u8 = 1 << 2;
+/// 不超过 [`TEXT_LEN`] 且落在字符边界上的字节数。
+const fn fit(source: &[u8]) -> usize {
+    let mut len = if source.len() < TEXT_LEN {
+        source.len()
+    } else {
+        TEXT_LEN
+    };
+    while len > 0 && len < source.len() && source[len] & 0xC0 == 0x80 {
+        len -= 1;
+    }
+    len
+}
 
 /// 一次刷新传入的原始输入。
 #[derive(Clone, Copy, Default)]

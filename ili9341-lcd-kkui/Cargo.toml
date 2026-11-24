@@ -12,6 +12,7 @@ embassy-executor.workspace = true
 defmt.workspace = true
 rtt-target.workspace = true
 panic-rtt-target.workspace = true
+static_cell.workspace = true
 
 kk-ui-rs.workspace = true
 ili9341.workspace = true

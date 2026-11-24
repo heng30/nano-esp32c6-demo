@@ -7,8 +7,11 @@ ILI9341 屏上，内容是官方标准 Demo 的原样移植：首页图标选择
 - 栈：`esp-hal 1.2` + `esp-rtos` + `embassy`（`#[esp_rtos::main]`）
 - 显示：`ili9341 0.6`（`graphics` 特性）+ `embedded-graphics-core`，8080-16 位并口
   由本目录的 `display.rs` 打时序
-- UI：`kk-ui-rs`（`../kk_ui_rs`，只依赖 `core`），128×64 单色画布**放大 2 倍**居中
-  贴在 320×240 的屏上（内容区 256×128，左上角 `(32, 56)`），黑底白字
+- UI：`kk-ui-rs`（`../kk-ui-rs`，只依赖 `core`），画布尺寸由本例子给定：160×120 的
+  1 bit 画布**放大 2 倍铺满** 320×240 的屏，黑底白字。菜单因此能显示 6 行，首页图标组
+  与弹窗按画布高度垂直居中；换成别的画布只改 `CANVAS_WIDTH`/`CANVAS_HEIGHT`（行高仍 16 px）
+- 刷新：`display::blit_canvas` 每条逻辑行展开成物理行后整行递交，全屏一次约 34 ms（≈29 fps
+  上限），日志里每 5 秒打印一次 `blit=` 平均值
 - 日志：`defmt` over RTT（不是串口）
 
 ## 接线

@@ -1,9 +1,9 @@
 //! KK_UI 运行时：页面栈、输入消抖、动画调度、事件队列与延迟请求。
 
-use crate::dialog;
-use crate::gfx::{DrawMode, Frame, HEIGHT, WIDTH};
+use crate::widgets::dialog;
+use crate::gfx::{DrawMode, Frame};
 use crate::model::*;
-use crate::pages;
+use crate::widgets::pages;
 
 /// 导航栈深度上限。
 const NAV_DEPTH: usize = 8;
@@ -43,8 +43,6 @@ pub(crate) const MENU_HEADER_HEIGHT: i16 = 14;
 pub(crate) const INFO_HEADER_HEIGHT: i16 = 16;
 /// 列表行高。
 pub(crate) const ROW_HEIGHT: i16 = 16;
-/// 菜单可见行数。
-pub(crate) const VISIBLE_ROWS: u16 = 3;
 /// 页面切换时旧页面的视差位移。
 const PAGE_PARALLAX: i16 = 32;
 
@@ -117,91 +115,140 @@ pub(crate) struct PageState {
 /// 单个按键的消抖与重复状态。
 #[derive(Clone, Copy, Default)]
 struct KeyState {
+    /// 原始电平最近一次变化的时刻。
     changed_at: u32,
+    /// 本次按下生效的时刻。
     pressed_at: u32,
+    /// 下一次触发长按重复的时刻。
     repeat_at: u32,
+    /// 消抖前的原始电平。
     candidate: bool,
+    /// 消抖后的稳定电平。
     stable: bool,
+    /// 本次按下是否还未被消费。
     armed: bool,
 }
 
 /// 列表滚动与焦点补间的起点。
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ListAnimation {
+    /// 补间起点的滚动量，Q8。
     pub(crate) scroll_from_q8: i32,
+    /// 补间起点的焦点偏移，Q8。
     pub(crate) focus_from_q8: i32,
+    /// 动画开始的时戳。
     pub(crate) started: u32,
+    /// 动画总时长（毫秒）。
     pub(crate) duration: u32,
+    /// 是否正在播放。
     pub(crate) active: bool,
 }
 
 /// 首页横向补间的起点。
 #[derive(Clone, Copy, Default)]
 pub(crate) struct HomeAnimation {
+    /// 补间起点的图标横向偏移，Q8。
     pub(crate) offset_from_q8: i32,
+    /// 补间起点的标签框宽度，Q8。
     pub(crate) label_from_q8: i32,
+    /// 补间终点的标签框宽度，Q8。
     pub(crate) label_to_q8: i32,
+    /// 动画开始的时戳。
     pub(crate) started: u32,
+    /// 是否正在播放。
     pub(crate) active: bool,
 }
 
 /// 页面切换动画。
 #[derive(Clone, Copy, Default)]
 struct PageTransition {
+    /// 正在退出页面的状态快照。
     outgoing: PageState,
+    /// 动画开始的时戳。
     started: u32,
+    /// 是否正在播放。
     active: bool,
+    /// 是返回还是进入，决定两页的滑动方向。
     reverse: bool,
 }
 
 /// 覆盖层类型。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlayType {
+    /// 无覆盖层。
     None,
+    /// 整数编辑器。
     Int,
+    /// 开关编辑器。
     Bool,
+    /// 确认框。
     Confirm,
+    /// 消息框。
     Message,
 }
 
 /// 弹窗焦点。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DialogFocus {
+    /// 取值区域。
     Value,
+    /// 确定按钮。
     Confirm,
+    /// 取消按钮。
     Cancel,
 }
 
 /// 覆盖层状态。
 #[derive(Clone, Copy)]
 pub(crate) struct Overlay {
+    /// 当前覆盖层类型。
     pub kind: OverlayType,
+    /// 绑定表或确认框表的下标。
     pub reference: u16,
+    /// 正文；确认框与消息框使用。
     pub text: &'static str,
+    /// 关闭时要入队的事件。
     pub event: EventId,
+    /// 编辑器草稿值。
     pub draft: i32,
+    /// 打开时的原值，用于判断是否改动。
     pub original: i32,
+    /// 上一个草稿值，用于上下列滚动动画。
     pub previous: i32,
     /// 当前焦点矩形，Q8 定点 `(x, y, w, h)`。
     pub focus: (i32, i32, i32, i32),
     /// 补间起点的焦点矩形。
     pub focus_from: (i32, i32, i32, i32),
+    /// 焦点位置。
     pub focus_mode: DialogFocus,
+    /// 开/关动画开始的时戳。
     pub phase_started: u32,
+    /// 焦点补间开始的时戳。
     pub focus_started: u32,
+    /// 换值动画开始的时戳。
     pub value_started: u32,
+    /// 弹窗出现时对齐的行号。
     pub origin_y: i16,
+    /// 开合进度，Q12。
     pub phase_q12: u16,
+    /// 关闭动画起点的开合进度，Q12。
     pub phase_from_q12: u16,
+    /// 换值动画进度，Q12。
     pub value_q12: u16,
+    /// 换值方向，`1` 递增、`-1` 递减。
     pub value_direction: i8,
+    /// 是否处于取值编辑态。
     pub editing: bool,
+    /// 是否正在播关闭动画。
     pub closing: bool,
+    /// 焦点框是否正在补间。
     pub focus_moving: bool,
+    /// 取值是否正在换值动画。
     pub value_moving: bool,
 }
 
 impl Overlay {
+    /// 没有任何覆盖层时的初始状态。
     const EMPTY: Self = Self {
         kind: OverlayType::None,
         reference: 0,
@@ -231,34 +278,53 @@ impl Overlay {
 /// Toast 状态。
 #[derive(Clone, Copy)]
 pub(crate) struct Toast {
+    /// 提示文本。
     pub text: &'static str,
+    /// 滑入动画开始的时戳。
     pub shown_at: u32,
+    /// 到期时刻，到达后开始滑出。
     pub expires_at: u32,
+    /// 滑入进度，Q12。
     pub phase_q12: u16,
+    /// 是否可见。
     pub visible: bool,
+    /// 是否正在滑出。
     pub closing: bool,
 }
 
 /// 延迟请求类型。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeferredType {
+    /// 无请求。
     None,
+    /// 自绘页请求关闭。
     Close,
+    /// 自绘页结束并上报事件。
     Finish,
+    /// 打开整数编辑器。
     Int,
+    /// 打开开关编辑器。
     Bool,
+    /// 打开确认框。
     Confirm,
+    /// 打开消息框。
     Message,
+    /// 显示 Toast。
     Toast,
 }
 
 /// 一次延迟请求。
 #[derive(Clone, Copy)]
 pub(crate) struct Deferred {
+    /// 请求类型。
     pub kind: DeferredType,
+    /// 绑定表或确认框表的下标。
     pub reference: u16,
+    /// 消息框或结束时上报的事件。
     pub event: EventId,
+    /// 消息框或 Toast 的文本。
     pub text: &'static str,
+    /// Toast 时长（毫秒）。
     pub duration: u32,
 }
 
@@ -309,44 +375,70 @@ fn repeat_interval(held: u32) -> u32 {
 }
 
 /// UI 运行时状态；自绘页回调也通过它访问画布与 UI 接口。
-pub struct Runtime {
+pub struct Runtime<'a> {
+    /// 应用描述表。
     pub(crate) app: &'static App,
-    pub(crate) frame: Frame,
+    /// 画布。
+    pub(crate) frame: Frame<'a>,
+    /// 当前页面状态。
     pub(crate) current: PageState,
+    /// 导航栈，栈顶是上一页。
     stack: [PageState; NAV_DEPTH],
+    /// 页面切换动画。
     transition: PageTransition,
+    /// 首页横向动画。
     pub(crate) home_anim: HomeAnimation,
+    /// 列表滚动与焦点动画。
     pub(crate) list_anim: ListAnimation,
+    /// 覆盖层状态。
     pub(crate) overlay: Overlay,
+    /// Toast 状态。
     pub(crate) toast: Toast,
+    /// 待处理的延迟请求。
     deferred: Deferred,
+    /// 三个按键的消抖状态，下标对应按键位。
     keys: [KeyState; 3],
+    /// 事件环形队列。
     events: [EventId; EVENT_QUEUE_LENGTH],
+    /// 队列头部下标。
     event_head: u8,
+    /// 队列内事件数。
     event_count: u8,
+    /// 最近一次错误。
     error: ErrorInfo,
+    /// 最近一次 [`KkUi::update`] 的时戳。
     pub(crate) last_update: u32,
+    /// 下一帧最早可出帧的时刻。
     next_frame: u32,
+    /// 导航栈内页面数。
     stack_count: u8,
+    /// 是否已成功初始化。
     initialized: bool,
+    /// 按键状态是否已用首帧输入对齐。
     keys_initialized: bool,
+    /// 是否有待重画的内容。
     pub(crate) dirty: bool,
+    /// 是否有一帧新画面待上层提交。
     pub(crate) frame_ready: bool,
+    /// 是否正在执行自绘页回调。
     pub(crate) in_callback: bool,
+    /// [`Runtime::error`] 是否尚未被取走。
     error_valid: bool,
+    /// 拒绝操作的边框闪烁计数。
     pub(crate) reject_flash: u8,
+    /// 页面切换期间需要吞掉的按键位。
     blocked_keys: u8,
     /// 待通知的自绘页进入/离开事件，由 [`KkUi`] 在安全时机送进回调。
     enter_custom: Option<PageId>,
     leave_custom: Option<PageId>,
 }
 
-impl Runtime {
-    /// 绑定一份应用描述表。
-    pub(crate) fn new(app: &'static App) -> Self {
+impl<'a> Runtime<'a> {
+    /// 绑定一份应用描述表与帧缓冲。
+    pub(crate) fn new(app: &'static App, buffer: &'a mut [u8], width: i16, height: i16) -> Self {
         Self {
             app,
-            frame: Frame::new(),
+            frame: Frame::new(buffer, width, height),
             current: PageState::default(),
             stack: [PageState::default(); NAV_DEPTH],
             transition: PageTransition::default(),
@@ -394,12 +486,12 @@ impl Runtime {
     }
 
     /// 当前画布。
-    pub fn frame(&self) -> &Frame {
+    pub fn frame(&self) -> &Frame<'_> {
         &self.frame
     }
 
     /// 当前画布（可变），供自绘页绘制。
-    pub fn frame_mut(&mut self) -> &mut Frame {
+    pub fn frame_mut(&mut self) -> &mut Frame<'a> {
         &mut self.frame
     }
 
@@ -429,6 +521,7 @@ impl Runtime {
         self.error_valid = true;
     }
 
+    /// 记录一条配置错误并返回 `ConfigError`。
     fn config_error(&mut self, page: PageId, index: u16) -> Status {
         self.record_error(Status::ConfigError, page, index);
         Status::ConfigError
@@ -494,12 +587,22 @@ impl Runtime {
         Ok(())
     }
 
+    /// 回到根页面并清空导航栈、覆盖层、Toast 与动画，等于「重新开始」。
     pub(crate) fn init(&mut self) -> Status {
         if let Err((page, index)) = Self::validate_app(self.app) {
             return self.config_error(page, index);
         }
         let state = self.reset_page_state(self.app.root_page);
         self.current = state;
+        self.stack_count = 0;
+        self.transition.active = false;
+        self.home_anim.active = false;
+        self.list_anim.active = false;
+        self.overlay = Overlay::EMPTY;
+        self.toast.visible = false;
+        self.toast.closing = false;
+        self.blocked_keys = 0;
+        self.reject_flash = 0;
         self.initialized = true;
         self.dirty = true;
         if self.current_page_type() == PageType::Custom {
@@ -564,6 +667,16 @@ impl Runtime {
     /// 显示工作是否已经静止：可以安全地做一次阻塞式提交。
     pub fn is_display_idle(&self) -> bool {
         self.initialized && !self.dirty && !self.frame_ready
+    }
+
+    /// 当前页面的选中条目下标；菜单页等于条目数时表示虚拟返回项。
+    pub fn selected_index(&self) -> u16 {
+        self.current.selected
+    }
+
+    /// 是否有覆盖层（编辑器、确认框、消息框）正占用输入。
+    pub fn dialog_open(&self) -> bool {
+        self.overlay.kind != OverlayType::None
     }
 
     /// 读取整数编辑器草稿；编辑器未打开时返回 `None`。
@@ -770,6 +883,7 @@ impl Runtime {
         self.navigate_back(now)
     }
 
+    /// 启动页面切换动画，并吞掉切换期间仍按住的按键。
     fn start_transition(&mut self, outgoing: PageState, reverse: bool, now: u32) {
         let mut stable = 0u8;
         for (index, key) in self.keys.iter().enumerate() {
@@ -911,22 +1025,22 @@ impl Runtime {
 /// 自绘页适配器：应用实现它来接管 `PageType::Custom` 页面。
 pub trait CustomPage {
     /// 进入页面。
-    fn on_enter(&mut self, ui: &mut Runtime, page: PageId) {
+    fn on_enter(&mut self, ui: &mut Runtime<'_>, page: PageId) {
         let _ = (ui, page);
     }
 
     /// 离开页面；在切换动画结束后调用。
-    fn on_leave(&mut self, ui: &mut Runtime, page: PageId) {
+    fn on_leave(&mut self, ui: &mut Runtime<'_>, page: PageId) {
         let _ = (ui, page);
     }
 
     /// 处理输入。
-    fn on_input(&mut self, ui: &mut Runtime, page: PageId, event: InputEvent) {
+    fn on_input(&mut self, ui: &mut Runtime<'_>, page: PageId, event: InputEvent) {
         let _ = (ui, page, event);
     }
 
     /// 逐帧推进；返回 `true` 表示需要重画。
-    fn on_tick(&mut self, ui: &mut Runtime, page: PageId, now: u32) -> bool {
+    fn on_tick(&mut self, ui: &mut Runtime<'_>, page: PageId, now: u32) -> bool {
         let _ = (ui, page, now);
         false
     }
@@ -934,7 +1048,7 @@ pub trait CustomPage {
     /// 绘制页面；`x_offset` 为视差位移，`clip_x`/`clip_width` 是可见区域。
     fn on_draw(
         &mut self,
-        ui: &mut Runtime,
+        ui: &mut Runtime<'_>,
         page: PageId,
         x_offset: i16,
         clip_x: i16,
@@ -945,21 +1059,29 @@ pub trait CustomPage {
 }
 
 /// UI 本体：运行时 + 自绘页适配器。
-pub struct KkUi<C: CustomPage> {
-    rt: Runtime,
+pub struct KkUi<'a, C: CustomPage> {
+    /// 运行时状态。
+    rt: Runtime<'a>,
+    /// 应用提供的自绘页实现。
     custom: C,
 }
 
-impl<C: CustomPage> KkUi<C> {
-    /// 绑定应用描述表与自绘页实现。
-    pub fn new(app: &'static App, custom: C) -> Self {
+impl<'a, C: CustomPage> KkUi<'a, C> {
+    /// 绑定应用描述表、自绘页实现与一块 `width * ceil(height / 8)` 字节的帧缓冲。
+    pub fn new(
+        app: &'static App,
+        custom: C,
+        buffer: &'a mut [u8],
+        width: i16,
+        height: i16,
+    ) -> Self {
         Self {
-            rt: Runtime::new(app),
+            rt: Runtime::new(app, buffer, width, height),
             custom,
         }
     }
 
-    /// 校验配置并初始化。
+    /// 校验配置，回到根页面并清空导航栈、覆盖层与动画。
     pub fn init(&mut self) -> Status {
         let status = self.rt.init();
         self.flush_custom();
@@ -1002,7 +1124,7 @@ impl<C: CustomPage> KkUi<C> {
     }
 
     /// 当前画布。
-    pub fn frame(&self) -> &Frame {
+    pub fn frame(&self) -> &Frame<'_> {
         self.rt.frame()
     }
 
@@ -1048,6 +1170,16 @@ impl<C: CustomPage> KkUi<C> {
         self.rt.is_display_idle()
     }
 
+    /// 当前页面的选中条目下标；菜单页等于条目数时表示虚拟返回项。
+    pub fn selected_index(&self) -> u16 {
+        self.rt.selected_index()
+    }
+
+    /// 是否有覆盖层（编辑器、确认框、消息框）正占用输入。
+    pub fn dialog_open(&self) -> bool {
+        self.rt.dialog_open()
+    }
+
     /// 标记需要重画。
     pub fn invalidate(&mut self) {
         self.rt.invalidate();
@@ -1078,6 +1210,7 @@ impl<C: CustomPage> KkUi<C> {
         self.rt.show_toast(text, duration_ms)
     }
 
+    /// 把待发的进入/离开事件送进自绘页回调。
     fn flush_custom(&mut self) {
         while let Some(page) = self.rt.enter_custom.take() {
             let Self { rt, custom } = self;
@@ -1093,6 +1226,7 @@ impl<C: CustomPage> KkUi<C> {
         }
     }
 
+    /// 逐帧推进当前自绘页；回调返回 `true` 时要求重画。
     fn custom_tick(&mut self, now: u32) {
         if self.rt.current_page_type() != PageType::Custom || self.rt.transition.active {
             return;
@@ -1107,6 +1241,7 @@ impl<C: CustomPage> KkUi<C> {
         }
     }
 
+    /// 消抖、识别长按重复与编码器，并发出一条归一化输入事件。
     #[allow(clippy::needless_range_loop)]
     fn process_input(&mut self, now: u32, input: Input) {
         let mut press = 0u8;
@@ -1216,6 +1351,7 @@ impl<C: CustomPage> KkUi<C> {
         }
     }
 
+    /// 按当前页面类型把输入分发下去；有覆盖层时优先给弹窗。
     fn dispatch_input(&mut self, event: InputEvent, now: u32) {
         if dialog::dialog_active(&self.rt) {
             dialog::input(&mut self.rt, event, now);
@@ -1235,6 +1371,7 @@ impl<C: CustomPage> KkUi<C> {
         }
     }
 
+    /// 按页面类型绘制一页；`x_offset` 为视差位移，`clip_x`/`clip_width` 是可见区域。
     fn draw_page(
         &mut self,
         state: PageState,
@@ -1280,11 +1417,14 @@ impl<C: CustomPage> KkUi<C> {
         }
     }
 
+    /// 清屏并重画整个场景：页面、切换动画、拒绝闪烁、弹窗与 Toast。
     fn draw_scene(&mut self) {
         self.rt.frame.clear();
         self.rt.frame.reset_clip();
         self.rt.frame.set_draw_mode(DrawMode::Set);
         let now = self.rt.last_update;
+        let width = self.rt.frame.width();
+        let height = self.rt.frame.height();
 
         if self.rt.transition.active {
             let progress = ease_q12(now.wrapping_sub(self.rt.transition.started), PAGE_MS);
@@ -1295,48 +1435,50 @@ impl<C: CustomPage> KkUi<C> {
                 let outgoing_x =
                     -((PAGE_PARALLAX as i32 * progress as i32) / Q12_ONE as i32) as i16;
                 let current_x =
-                    (WIDTH as i32 * (Q12_ONE as i32 - progress as i32) / Q12_ONE as i32) as i16;
+                    (width as i32 * (Q12_ONE as i32 - progress as i32) / Q12_ONE as i32) as i16;
                 boundary = current_x;
                 if boundary > 0 {
                     self.draw_page(outgoing, false, outgoing_x, 0, boundary as u16);
                 }
-                if boundary < WIDTH {
+                if boundary < width {
                     self.draw_page(
                         current,
                         true,
                         current_x,
                         boundary,
-                        (WIDTH - boundary) as u16,
+                        (width - boundary) as u16,
                     );
                 }
             } else {
                 let outgoing_x = (PAGE_PARALLAX as i32 * progress as i32 / Q12_ONE as i32) as i16;
-                boundary = (WIDTH as i32 * progress as i32 / Q12_ONE as i32) as i16;
-                let current_x = boundary - WIDTH;
+                boundary = (width as i32 * progress as i32 / Q12_ONE as i32) as i16;
+                let current_x = boundary - width;
                 if boundary > 0 {
                     self.draw_page(current, true, current_x, 0, boundary as u16);
                 }
-                if boundary < WIDTH {
+                if boundary < width {
                     self.draw_page(
                         outgoing,
                         false,
                         outgoing_x,
                         boundary,
-                        (WIDTH - boundary) as u16,
+                        (width - boundary) as u16,
                     );
                 }
             }
-            if (0..WIDTH).contains(&boundary) {
+            if (0..width).contains(&boundary) {
                 self.rt.frame.reset_clip();
-                self.rt.frame.draw_vline(boundary, 0, HEIGHT as u16);
+                self.rt.frame.draw_vline(boundary, 0, height as u16);
             }
         } else {
-            self.draw_page(self.rt.current, true, 0, 0, WIDTH as u16);
+            self.draw_page(self.rt.current, true, 0, 0, width as u16);
         }
 
         if self.rt.reject_flash > 1 {
             self.rt.frame.set_draw_mode(DrawMode::Xor);
-            self.rt.frame.draw_rframe(1, 1, 126, 62, 3);
+            self.rt
+                .frame
+                .draw_rframe(1, 1, (width - 2) as u16, (height - 2) as u16, 3);
             self.rt.frame.set_draw_mode(DrawMode::Set);
             self.rt.reject_flash = 1;
             self.rt.dirty = true;

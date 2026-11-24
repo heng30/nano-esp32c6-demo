@@ -44,7 +44,7 @@ nanoESP32-C6（MuseLab v1.0），模组为 `ESP32-C6-WROOM-1-N16`（芯片 rev v
 | `bilibili-follower/` | WiFi STA + 手写 HTTPS（`embedded-tls`），每分钟打印 B 站某 UP 主的粉丝数 | [链接](bilibili-follower/README.md) |
 | `ble-led/` | BLE 控制的板载 RGB 灯：手机写 `on`/`off`，`trouble-host` + `esp-hal-smartled` | [链接](ble-led/README.md) |
 | `minio-rs/` | Minino OS 的 Rust 移植：BOOT 键菜单（Portal / wardriving / 802.15.4）、SSD1306 菜单、microSD 落盘、NV 持久化；WiFi 与 802.15.4 是两种不能同固件的形态 | [链接](minio-rs/README.md) |
-| `kkui-rs/` | KK_UI（128×64 单色菜单 UI）的 Rust 移植库 `kk_ui_rs/` + 在 ILI9341 上跑原版标准 Demo 的 `ili9341-kkui-demo/`；**独立 workspace**，依赖不继承根 `workspace.dependencies` | [链接](kkui-rs/ili9341-kkui-demo/README.md) |
+| `kk-ui-rs/` | KK_UI（单色菜单 UI）的 Rust 移植库（只依赖 `core`，画布尺寸由应用给定）：页式 1 bit 画布、首页/菜单/信息页/自绘页、编辑器与弹窗；`ili9341-lcd-kkui/` 把原版标准 Demo 跑在 ILI9341 上 | [链接](kk-ui-rs/README.md) |
 | `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall`、日志式环形 flash 文件系统、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | [链接](openc6-bios-rs/README.md) |
 
 `esp32c6-top50/`（只读的上游仓库克隆与报告）已 exclude，不参与构建。

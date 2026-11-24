@@ -5,8 +5,13 @@
 
 use defmt::info;
 use display_interface::{DataFormat, DisplayError, WriteOnlyDataCommand};
+use embedded_graphics_core::{pixelcolor::Rgb565, prelude::*, primitives::Rectangle};
 use esp_hal::{delay::Delay, gpio::Output};
 use ili9341::{DisplaySize240x320, Ili9341, Orientation};
+use kk_ui::Frame;
+
+/// 1 bit 画布的放大倍数：160×120 的画布正好铺满 320×240 的屏。
+pub(crate) const SCALE: u32 = 2;
 
 /// 数据线 GPIO 编号，下标即位序，不连续。
 const DATA_PINS: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 18, 19, 20, 21, 22];
@@ -101,6 +106,7 @@ impl Bus {
     }
 
     /// 一次并口写：摆好数据与 DC，再打一个 WR 脉冲。
+    #[inline(always)]
     fn write(&mut self, value: u16, is_data: bool) {
         let mut set = SET_LO[(value & 0xff) as usize] | SET_HI[(value >> 8) as usize];
         if is_data {
@@ -166,4 +172,24 @@ pub(crate) fn new(
     .expect("ili9341 init failed");
     info!("ili9341 ready {}x{}", display.width(), display.height());
     display
+}
+
+/// 把 1 bit 画布按 [`SCALE`] 放大铺满屏。
+///
+/// 先把一条逻辑行展开成物理行再递交：并口一个像素就要两次寄存器写，
+/// 逐像素现算颜色会让迭代器开销盖过真正的总线时间。
+pub(crate) fn blit_canvas(display: &mut Display, frame: &Frame<'_>) {
+    // 320 是这块屏的物理宽度，也是画布宽度 × SCALE 的上限。
+    let mut row = [Rgb565::BLACK; 320];
+    for y in 0..frame.height() {
+        let count = frame.expand_row(y, SCALE as usize, Rgb565::WHITE, Rgb565::BLACK, &mut row);
+        if count == 0 {
+            continue;
+        }
+        let area = Rectangle::new(
+            Point::new(0, y as i32 * SCALE as i32),
+            Size::new(count as u32, SCALE),
+        );
+        let _ = display.fill_contiguous(&area, row[..count].iter().copied());
+    }
 }

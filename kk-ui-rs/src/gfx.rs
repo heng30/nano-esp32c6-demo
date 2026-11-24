@@ -1,16 +1,11 @@
-//! 128×64 单色画布：页式帧缓冲、半开裁剪窗口、绘图模式与图元。
+//! 单色画布：页式帧缓冲、半开裁剪窗口、绘图模式与图元。
 //!
 //! 布局与 KK_OLED 一致：每字节是同列连续 8 行，位序按行号从低到高。
+//! 画布尺寸由调用方给出，帧缓冲由调用方提供（`width * ceil(height / 8)` 字节），
+//! 因此同一个库可以直接跑在任意分辨率的屏上。
 //! 坐标一律是有符号 `i16`，裁剪窗口是半开区间 `[x0, x1) × [y0, y1)`。
 
 use crate::font::Font;
-
-/// 逻辑画布宽度（像素）。
-pub const WIDTH: i16 = 128;
-/// 逻辑画布高度（像素）。
-pub const HEIGHT: i16 = 64;
-/// 页式缓冲字节数。
-const BUF_LEN: usize = WIDTH as usize * (HEIGHT as usize / 8);
 
 /// 前景像素如何作用于帧缓冲。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,11 +19,18 @@ pub enum DrawMode {
 }
 
 /// 单色画布与绘制状态。
-pub struct Frame {
-    buf: [u8; BUF_LEN],
+pub struct Frame<'a> {
+    /// 帧缓冲，长度已按画布尺寸截断。
+    buf: &'a mut [u8],
+    /// 画布宽度（像素）。
+    width: i16,
+    /// 画布高度（像素）。
+    height: i16,
     /// 半开裁剪窗口 `(x0, y0, x1, y1)`。
     clip: (i16, i16, i16, i16),
+    /// 后续图元的前景处理方式。
     mode: DrawMode,
+    /// 当前字体；`None` 时文字绘制为空操作。
     font: Option<&'static Font>,
     /// 当前字体的上升量（像素）。
     ascent: i16,
@@ -36,18 +38,18 @@ pub struct Frame {
     descent: i16,
 }
 
-impl Default for Frame {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Frame {
-    /// 空白画布：全部像素清零，裁剪窗口为整屏，绘图模式为置一。
-    pub const fn new() -> Self {
+impl<'a> Frame<'a> {
+    /// 绑定一块帧缓冲：裁剪窗口为整屏，绘图模式为置一。
+    /// 缓冲短于 [`Frame::buffer_len`] 时底部超出部分不绘制。
+    pub fn new(buf: &'a mut [u8], width: i16, height: i16) -> Self {
+        let width = width.max(0);
+        let height = height.max(0);
+        let len = Self::buffer_len(width, height).min(buf.len());
         Self {
-            buf: [0; BUF_LEN],
-            clip: (0, 0, WIDTH, HEIGHT),
+            buf: &mut buf[..len],
+            width,
+            height,
+            clip: (0, 0, width, height),
             mode: DrawMode::Set,
             font: None,
             ascent: 0,
@@ -55,17 +57,50 @@ impl Frame {
         }
     }
 
+    /// 给定尺寸需要的帧缓冲字节数。
+    pub const fn buffer_len(width: i16, height: i16) -> usize {
+        width as usize * (height as usize).div_ceil(8)
+    }
+
+    /// 画布宽度（像素）。
+    pub fn width(&self) -> i16 {
+        self.width
+    }
+
+    /// 画布高度（像素）。
+    pub fn height(&self) -> i16 {
+        self.height
+    }
+
     /// 原始帧缓冲，供上层放大显示。
-    pub fn buffer(&self) -> &[u8; BUF_LEN] {
-        &self.buf
+    pub fn buffer(&self) -> &[u8] {
+        self.buf
+    }
+
+    /// 把第 `y` 行按整数倍 `scale` 横向展开写进 `out`，亮像素取 `on`、灭像素取 `off`。
+    ///
+    /// 返回写入的像素数：`out` 装不下的尾部丢弃，画布外与 `scale == 0` 都返回 0。
+    /// 缩放只看整块画布，与裁剪窗口无关；纵向重复由调用方按屏递交方式处理。
+    pub fn expand_row<T: Copy>(&self, y: i16, scale: usize, on: T, off: T, out: &mut [T]) -> usize {
+        if scale == 0 {
+            return 0;
+        }
+        let columns = (out.len() / scale).min(self.width.max(0) as usize);
+        let mut count = 0;
+        for x in 0..columns as i16 {
+            let value = if self.pixel(x, y) { on } else { off };
+            out[count..count + scale].fill(value);
+            count += scale;
+        }
+        count
     }
 
     /// 读取一个逻辑坐标像素。
     pub fn pixel(&self, x: i16, y: i16) -> bool {
-        if !(0..WIDTH).contains(&x) || !(0..HEIGHT).contains(&y) {
+        if !(0..self.width).contains(&x) || !(0..self.height).contains(&y) {
             return false;
         }
-        let index = x as usize + (y as usize >> 3) * WIDTH as usize;
+        let index = x as usize + (y as usize >> 3) * self.width as usize;
         self.buf[index] & (1u8 << (y & 7)) != 0
     }
 
@@ -86,16 +121,16 @@ impl Frame {
         }
         let mut x1 = x as i32 + width as i32;
         let mut y1 = y as i32 + height as i32;
-        let x0 = x.clamp(0, WIDTH);
-        let y0 = y.clamp(0, HEIGHT);
-        x1 = x1.clamp(x0 as i32, WIDTH as i32);
-        y1 = y1.clamp(y0 as i32, HEIGHT as i32);
+        let x0 = x.clamp(0, self.width);
+        let y0 = y.clamp(0, self.height);
+        x1 = x1.clamp(x0 as i32, self.width as i32);
+        y1 = y1.clamp(y0 as i32, self.height as i32);
         self.clip = (x0, y0, x1 as i16, y1 as i16);
     }
 
     /// 裁剪窗口恢复为整屏。
     pub fn reset_clip(&mut self) {
-        self.clip = (0, 0, WIDTH, HEIGHT);
+        self.clip = (0, 0, self.width, self.height);
     }
 
     /// 当前裁剪窗口 `(x0, y0, x1, y1)`。
@@ -126,7 +161,7 @@ impl Frame {
         if x < x0 || x >= x1 || y < y0 || y >= y1 || !on {
             return;
         }
-        let index = x as usize + (y as usize >> 3) * WIDTH as usize;
+        let index = x as usize + (y as usize >> 3) * self.width as usize;
         let mask = 1u8 << (y & 7);
         match self.mode {
             DrawMode::Set => self.buf[index] |= mask,
@@ -302,7 +337,7 @@ impl Frame {
         if width == 0 || height == 0 || width > i16::MAX as u16 || height > i16::MAX as u16 {
             return None;
         }
-        let (x0, y0, x1, y1) = self.clip;
+        let (_x0, y0, _x1, y1) = self.clip;
         if !self.clip_intersects(
             x as i32,
             y as i32,
@@ -314,7 +349,6 @@ impl Frame {
         let radius = radius.min((width.min(height) - 1) / 2);
         let top = (y as i32).max(y0 as i32) as i16;
         let bottom = (y as i32 + height as i32).min(y1 as i32) as i16;
-        let _ = (x0, x1);
         Some((radius, top, bottom))
     }
 
@@ -339,7 +373,8 @@ impl Frame {
 
     /// 绘制圆周。
     pub fn draw_circle(&mut self, x: i16, y: i16, radius: u16) {
-        if radius as i16 > WIDTH.max(HEIGHT) || !self.curve_visible(x, y, radius, radius) {
+        if radius as i16 > self.width.max(self.height) || !self.curve_visible(x, y, radius, radius)
+        {
             return;
         }
         self.midpoint_circle(x, y, radius);
@@ -347,7 +382,8 @@ impl Frame {
 
     /// 绘制实心圆。
     pub fn draw_disc(&mut self, x: i16, y: i16, radius: u16) {
-        if radius as i16 > WIDTH.max(HEIGHT) || !self.curve_visible(x, y, radius, radius) {
+        if radius as i16 > self.width.max(self.height) || !self.curve_visible(x, y, radius, radius)
+        {
             return;
         }
         self.fill_ellipse(x, y, radius, radius);
@@ -413,7 +449,7 @@ impl Frame {
 
     /// 绘制 XBM（行优先、字节内 LSB 在左）。
     pub fn draw_xbm(&mut self, x: i16, y: i16, width: u16, height: u16, bitmap: &[u8]) {
-        let extent = WIDTH.max(HEIGHT) as u16;
+        let extent = self.width.max(self.height) as u16;
         if width == 0 || height == 0 || width > extent || height > extent {
             return;
         }
