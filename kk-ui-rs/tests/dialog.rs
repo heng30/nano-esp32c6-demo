@@ -4,7 +4,7 @@
 //! 于是编辑器按「确定」永远回到编辑态、确认框永远停在取消上。
 
 use kk_ui::{
-    App, BoolBinding, ConfirmDesc, CustomPage, Font, Frame, Input, IntBinding, KEY_DOWN, KEY_OK,
+    App, BoolBinding, ConfirmDesc, CustomPage, Frame, Glyphs, Input, IntBinding, KEY_DOWN, KEY_OK,
     KkUi, MenuItem, MenuItemType, MenuPage, PageId, PageRoute, PageType, Shared, Texts, set_font,
 };
 
@@ -20,10 +20,12 @@ const EVENT_CANCELLED: u16 = 4;
 const WIDTH: i16 = 128;
 const HEIGHT: i16 = 64;
 
-/// 只用到头部字段的假字体：字模查不到，文字绘制为空。
-static FONT: Font = Font::new(&[
-    0, 0, 2, 1, 4, 4, 3, 3, 3, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-]);
+/// 空字库：每个字符都缺字，文字绘制为空但仍按全角步进占位。
+static GLYPHS: Glyphs = Glyphs {
+    bitmaps: &[],
+    widths: &[],
+    codepoints: &[],
+};
 static ICON: [u8; 8] = [0; 8];
 static INT_VALUE: Shared<i32> = Shared::new(10);
 static BOOL_VALUE: Shared<bool> = Shared::new(false);
@@ -120,8 +122,8 @@ struct Panel {
 
 impl Panel {
     fn new() -> Self {
-        // 测试不开 cjk-fonts，默认无字体；装上假 u8g2 字体让布局走真实代码路径。
-        set_font(&FONT);
+        // 测试不开 cjk-fonts，默认无字体；装上空字库让布局走真实代码路径。
+        set_font(&GLYPHS);
         let buffer: &'static mut [u8] =
             Box::leak(vec![0u8; Frame::buffer_len(WIDTH, HEIGHT)].into_boxed_slice());
         let mut ui = KkUi::new(&APP, NoPage, buffer, WIDTH, HEIGHT);

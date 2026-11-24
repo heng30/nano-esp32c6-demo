@@ -26,10 +26,7 @@ pub mod cjk;
 #[cfg(feature = "sim")]
 pub mod sim;
 
-#[cfg(feature = "cjk-fonts")]
-pub use font::set_builtin_cjk;
-
-pub use font::{Font, set_font};
+pub use font::{FULL_WIDTH, GLYPH_LEN, GLYPH_SIZE, Glyphs, set_font};
 pub use gfx::{DrawMode, Frame};
 pub use model::{
     App, BoolBinding, ConfirmDesc, EVENT_NONE, EventId, HomeItem, HomePage, InfoPage, InfoRow,

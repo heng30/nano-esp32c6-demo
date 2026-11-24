@@ -36,10 +36,10 @@
   和 `Text`（长度受限的共享文本）。它们是单核裸机下顺序访问的 `Cell` 包装。
 - **画布尺寸不再固定**：C 版写死 `KK_UI_SCREEN_WIDTH/HEIGHT`，这里由
   `KkUi::new` 的 `width`/`height` 决定（仍无 `alloc`，帧缓冲是调用方给的切片）。
-  行高 16、菜单表头 14、信息页表头 16 仍是常量：屏越高菜单越多行，首页图标组与弹窗
+  行高 16、菜单表头 18、信息页表头 18 仍是常量：屏越高菜单越多行，首页图标组与弹窗
   按画布高度垂直居中，Toast 贴底，弹窗与 Toast 横向居中，跨页动画的位移跟着宽度走。
-- **文字只实现 UI 实际用到的模式**：u8g2 字库仍是原格式（可以继续用 LEDFont 生成），
-  但只支持顶部对齐 + `REF_ALL` 参考高度；旋转/基线/居中参考高度没有移植。
+- **只有一种字体尺寸**：16×16 定长点阵、顶部对齐，全角 16 px 步进、半角按表里的
+  原始宽度；U8g2 的 RLE 字库格式与旋转/基线参考高度都没有移植。
 - **图元只移植用到的**：像素、横竖线、直线、矩形框/实心矩形、圆角框/实心圆角矩形、
   圆、实心圆、XBM、UTF-8 文字。椭圆、圆弧、三角形、旋转位图没移植。
 
@@ -93,11 +93,21 @@ impl CustomPage for MyPage {
 `Frame::draw_text` / `Frame::text_width` 直接读它。设置函数在程序初始化时调用一次：
 
 ```rust
-// 启用 cjk-fonts 特性时默认就是内嵌点阵，初始化无需任何调用。
-// 要换成自己的 u8g2 字库（LEDFont / bdfconv 原格式）：
-kk_ui::set_font(&MY_FONT);
-// 要换回内嵌点阵：
-kk_ui::set_builtin_cjk();
+// 启用 cjk-fonts 特性时默认就是内嵌字库，初始化无需任何调用。
+// 要换成自己的 16×16 字库：
+kk_ui::set_font(&MY_GLYPHS);
+// 要换回内嵌字库：
+kk_ui::set_font(&kk_ui::cjk::GLYPHS);
+```
+
+字库是「点阵 / 宽度 / 码点」三张平行静态表，自己的表只需按同一布局提供：
+
+```rust
+pub struct Glyphs {
+    pub bitmaps: &'static [u8],     // 每个字形 32 字节，16 行 × 2 字节，行内 MSB 在左
+    pub widths: &'static [u8],      // 像素宽度，全角 16、半角按实际
+    pub codepoints: &'static [u8],  // u16 小端升序，二分查找
+}
 ```
 
 不开 `cjk-fonts` 时初始未设置字体，文字绘制为空操作，须先 `set_font`。
@@ -113,10 +123,10 @@ cargo build --features cjk-fonts
 
 ```rust
 let mut frame = Frame::new(&mut buffer, 128, 64);
-// Frame 的文字接口走全局字体，也可以直接用 cjk 模块。
+// Frame 的文字接口走全局字体，也可以直接查内嵌字库。
 frame.draw_text(0, 0, "屏幕亮度：80% FPS: 30");
 
-if let Some(bitmap) = cjk::glyph('中') {
+if let Some(bitmap) = kk_ui::cjk::GLYPHS.glyph('中') {
     // 16×16 点阵，行内 MSB 在左，每行 2 字节
 }
 ```
