@@ -87,27 +87,58 @@ impl CustomPage for MyPage {
 }
 ```
 
-## 本地仿真（宿主机）
+## 内嵌中文点阵（`cjk-fonts`）
 
-`sim` 特性把画布接到 eframe 窗口，不用板子也能看效果。库本体仍是 `#![no_std]`，
-不开这个特性时 `eframe` / `png` 都不会被拉进来：
+仓库自带 GNU Unifont，`build.rs` 在编译期从 `assets/fonts/unifont.bdf` 里抠出 GB2312
+汉字与中文标点写进 `OUT_DIR`，启用特性即可直接用，不必自己生成字模：
 
 ```bash
-cd kk-ui-rs
-cargo run --example sim --features sim          # 窗口：上方画布，下方 上/下/确定/截图
-cargo run --example sim --features sim -- --snapshot out.png --steps 40
+cargo build --features cjk-fonts
 ```
 
-窗口固定大小、内容居中，下方一排大号按钮（上/下/确定/截图）与键盘等价：
-`↑`/`←`/`k`/`h` 上、`↓`/`→`/`j`/`l` 下、回车确定、`S` 存一张 `sim-<n>.png`
-（整数倍放大的 8 位灰度 PNG）。窗口文字用 `examples/sim/assets/fonts/` 里的
-Noto Sans CJK SC。
-无头模式注入 `Autoplay` 走 `--steps` 拍（每拍 500 ms）后存一张截图，适合没有
-窗口的机器上调试。
+```rust
+use kk_ui::{Frame, cjk};
 
-`examples/sim/app.rs` 与 `examples/sim/assets/` 是 `../ili9341-lcd-kkui/src/` 里
-应用描述表与字体图标的副本（一份只依赖 `kk_ui` 与 `core` 的表，两边各带一份，
-换字体或改 Demo 时记得同步）。
+let mut frame = Frame::new(&mut buffer, 128, 64);
+cjk::draw_text(&mut frame, 0, 8, "屏幕亮度：80%");
+let width = cjk::text_width("设置");
+
+if let Some(bitmap) = cjk::glyph('中') {
+    // 16×16 点阵，行内 MSB 在左，每行 2 字节
+}
+```
+
+字形固定 16×16：全角 16 px 步进，半角（数字字母以及全角区里的窄字）按 BDF 原始宽度。
+码点二分查找，字库约 7075 个字形（6763 个 GB2312 汉字 + 中文标点、全角字符、制表符），
+编进库约 221 KB。`assets/fonts/unifont.bdf` 是仓库内副本（9 MB），没装 Unifont 的机器
+也能构建；不开 `cjk-fonts` 时这部分完全不参与编译。
+
+## 本地模拟器（宿主机）
+
+`sim` 特性编译出一个小框架（`kk_ui::sim`，源码在 `src/sim.rs`），把 1 bit 画布显示到
+eframe 窗口，并把窗口按键注入应用。库本体仍是 `#![no_std]`，不开这个特性时
+`eframe` / `png` 都不会被拉进来。
+
+```rust
+kk_ui::sim::run(
+    kk_ui::sim::Options { title: "demo", width: 160, height: 120, scale: 2 },
+    move |ctx| {
+        // 每帧调用一次：ctx.now 是毫秒时间戳，ctx.keys 是本帧按住的键
+        ui.update(ctx.now, Input { keys: ctx.keys, encoder_delta: 0 });
+        ctx.show(ui.frame()); // 交出这帧要显示的画布
+    },
+)?;
+```
+
+窗口固定大小、画布与按键栏都居中，底部一排大号按钮（上/下/确定/截图）与键盘等价：
+`↑`/`←`/`k`/`h` 上、`↓`/`→`/`j`/`l` 下、回车确定、`S` 存一张 `sim-<n>.png`。
+截图是 8 位灰度 PNG，`kk_ui::sim::save_png(frame, scale, path)` 也可以直接调，
+无头调试时不必开窗口。
+
+`examples/sim/` 是完整例子：`app.rs` 与 `assets/` 是 `../ili9341-lcd-kkui/src/` 里
+应用描述表与字体图标的副本（改一边记得同步另一边）。无头模式
+`cargo run --example sim --features sim -- --snapshot out.png --steps 40` 让 Demo
+自己走 40 拍再落盘。
 
 ## 许可证
 

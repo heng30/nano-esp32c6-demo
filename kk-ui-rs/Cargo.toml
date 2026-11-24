@@ -16,7 +16,13 @@ png = { workspace = true, optional = true }
 
 [features]
 sim = ["dep:eframe", "dep:png"]
+# 把仓库自带的 unifont 里抠出的 GB2312 汉字与中文标点嵌进库，见 build.rs。
+cjk-fonts = []
 
 [[example]]
 name = "sim"
 required-features = ["sim"]
+
+# 只在生成中文点阵时用到（build.rs）。
+[build-dependencies]
+encoding_rs.workspace = true

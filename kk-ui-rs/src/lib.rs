@@ -11,11 +11,20 @@
 
 #![no_std]
 
+// 模拟器跑在宿主机的 std 上，只有 `sim` 特性才把它拉进来。
+#[cfg(feature = "sim")]
+extern crate std;
+
 mod font;
 mod gfx;
 mod model;
 mod runtime;
 mod widgets;
+
+#[cfg(feature = "cjk-fonts")]
+pub mod cjk;
+#[cfg(feature = "sim")]
+pub mod sim;
 
 pub use font::Font;
 pub use gfx::{DrawMode, Frame};
@@ -26,4 +35,4 @@ pub use model::{
     Texts,
 };
 pub use runtime::{CustomPage, ErrorInfo, KkUi, Runtime, Status};
-pub use widgets::{utils::format_int, draw_focus, draw_progress_bar, draw_switch};
+pub use widgets::{draw_focus, draw_progress_bar, draw_switch, utils::format_int};
