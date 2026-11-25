@@ -33,6 +33,8 @@ const CMD_PING: u8 = 0x02;
 const CMD_CLEAR: u8 = 0x03;
 /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样）。
 const CMD_RESET: u8 = 0x04;
+/// 控制命令：设置放大倍数（载荷 1 字节）。
+const CMD_SCALE: u8 = 0x05;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -169,6 +171,11 @@ impl Link {
         self.transact(CMD_RESET, &[])
     }
 
+    /// 控制命令：设置板子的放大倍数（每块 tile 装 `(16/scale)²` 个源像素）。
+    pub fn set_scale(&mut self, scale: u8) -> Result<Report, LinkError> {
+        self.transact(CMD_SCALE, &[scale])
+    }
+
     /// 控制命令：清屏。
     pub fn clear(&mut self) -> Result<Report, LinkError> {
         self.transact(CMD_CLEAR, &[])
@@ -282,13 +289,17 @@ fn encode_tile(tile: &Tile, out: &mut Vec<u8>) {
     let head = out.len();
     out.extend_from_slice(&[KIND_RLE, 0, 0]);
 
-    encode_rle(&tile.pixels, out);
+    // 放大时一块里只有 (16/scale)² 个源像素，板子按 scale 铺回 16×16
+    let arm = tile.arm as usize;
+    let pixels = &tile.pixels[..arm * arm];
+    let raw_len = arm * arm * 2;
+    encode_rle(pixels, out);
     let len = out.len() - head - 3;
-    if len >= RAW_LEN {
+    if len >= raw_len {
         out.truncate(head);
         out.push(KIND_RAW);
-        out.extend_from_slice(&(RAW_LEN as u16).to_le_bytes());
-        for pixel in &tile.pixels {
+        out.extend_from_slice(&(raw_len as u16).to_le_bytes());
+        for pixel in pixels {
             out.extend_from_slice(&pixel.to_le_bytes());
         }
     } else {
@@ -354,6 +365,7 @@ mod tests {
         Tile {
             col,
             row,
+            arm: TILE as u8,
             pixels: [value; TILE * TILE],
         }
     }
@@ -429,6 +441,7 @@ mod tests {
         Tile {
             col,
             row,
+            arm: TILE as u8,
             pixels: [value; TILE * TILE],
         }
     }

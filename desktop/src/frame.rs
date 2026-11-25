@@ -22,7 +22,9 @@ pub struct Tile {
     pub col: u8,
     /// tile 行号。
     pub row: u8,
-    /// 16×16 的 RGB565 像素，行优先。
+    /// 每边的源像素数（`TILE / scale`），`pixels` 只用前 `arm * arm` 个。
+    pub arm: u8,
+    /// 16×16 的 RGB565 像素，行优先；放大时只用左上 `arm × arm`。
     pub pixels: [u16; TILE * TILE],
 }
 
@@ -32,8 +34,12 @@ pub struct Frame {
     resizer: Resizer,
     /// 缩放参数。
     options: ResizeOptions,
-    /// 缩放结果：320×240 的 RGBA。
+    /// 每边的源像素数（`TILE / scale`）。
+    arm: usize,
+    /// 缩放结果：`WIDTH/scale` × `HEIGHT/scale` 的 RGBA。
     scaled: Image<'static>,
+    /// 缩放后的像素宽度（行跨距）。
+    width: usize,
     cur: Vec<u16>,
     prev: Vec<u16>,
     dirty: Vec<usize>,
@@ -42,7 +48,12 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn new() -> Self {
+    /// `scale` 是放大倍数：抓屏缩到 `1/scale`，每块只采 `(16/scale)²` 个源像素，
+    /// 板子再把每个像素铺成 `scale × scale` 回填整屏。
+    pub fn new(scale: usize) -> Self {
+        let scale = scale.clamp(1, TILE);
+        let (width, height) = (WIDTH / scale, HEIGHT / scale);
+        let arm = TILE / scale;
         // 抓屏是 Xrgb8888，X 字节不可信（常常是 0），必须关掉 alpha 预乘，否则整屏会变黑
         let options = ResizeOptions {
             mul_div_alpha: false,
@@ -51,15 +62,17 @@ impl Frame {
         Self {
             resizer: Resizer::new(),
             options,
-            scaled: Image::new(WIDTH as u32, HEIGHT as u32, PixelType::U8x4),
-            cur: vec![0; WIDTH * HEIGHT],
-            prev: vec![0; WIDTH * HEIGHT],
+            arm,
+            scaled: Image::new(width as u32, height as u32, PixelType::U8x4),
+            width,
+            cur: vec![0; width * height],
+            prev: vec![0; width * height],
             dirty: Vec::with_capacity(TILES_X * TILES_Y),
             dirty_all: false,
         }
     }
 
-    /// 把 `rgba`（RGBA8888，`width` × `height`）整幅缩放成 320×240，并刷新脏块列表。
+    /// 把 `rgba`（RGBA8888，`width` × `height`）整幅缩放成 `1/scale` 大小，并刷新脏块列表。
     ///
     /// 缓冲不够一张整帧或缩放失败时返回 `false`，不改动任何状态。
     pub fn update(&mut self, rgba: &mut [u8], width: usize, height: usize) -> bool {
@@ -115,26 +128,29 @@ impl Frame {
         self.dirty_all = true;
     }
 
-    /// 取第 `index` 块，像素按行优先展开成连续 256 个。
+    /// 取第 `index` 块，像素按行优先展开成连续 `arm * arm` 个。
     pub fn tile(&self, index: usize) -> Tile {
         let (col, row) = (index % TILES_X, index / TILES_X);
+        let arm = self.arm;
         let mut pixels = [0u16; TILE * TILE];
-        for line in 0..TILE {
-            let from = (row * TILE + line) * WIDTH + col * TILE;
-            let to = line * TILE;
-            pixels[to..to + TILE].copy_from_slice(&self.cur[from..from + TILE]);
+        for line in 0..arm {
+            let from = (row * arm + line) * self.width + col * arm;
+            let to = line * arm;
+            pixels[to..to + arm].copy_from_slice(&self.cur[from..from + arm]);
         }
         Tile {
             col: col as u8,
             row: row as u8,
+            arm: arm as u8,
             pixels,
         }
     }
 
     fn tile_changed(&self, tx: usize, ty: usize) -> bool {
-        (0..TILE).any(|line| {
-            let from = (ty * TILE + line) * WIDTH + tx * TILE;
-            self.cur[from..from + TILE] != self.prev[from..from + TILE]
+        let arm = self.arm;
+        (0..arm).any(|line| {
+            let from = (ty * arm + line) * self.width + tx * arm;
+            self.cur[from..from + arm] != self.prev[from..from + arm]
         })
     }
 }
@@ -167,7 +183,7 @@ mod tests {
 
     #[test]
     fn scales_whole_frame_into_the_panel() {
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 
@@ -182,7 +198,7 @@ mod tests {
     #[test]
     fn ignores_alpha_channel() {
         // Xrgb 抓屏的 alpha 字节是 0，关闭 alpha 预乘后颜色不能被它吃掉
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 
@@ -191,7 +207,7 @@ mod tests {
 
     #[test]
     fn second_identical_frame_has_no_dirty_tile() {
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         let mut rgba = source(640, 480, true);
 
         assert!(frame.update(&mut rgba, 640, 480));
@@ -201,7 +217,7 @@ mod tests {
 
     #[test]
     fn invalidate_marks_every_tile_dirty() {
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
         assert!(!frame.dirty().is_empty());
@@ -216,7 +232,7 @@ mod tests {
 
     #[test]
     fn rejects_short_buffer() {
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         assert!(!frame.update(&mut [], 640, 480));
         let mut rgba = source(4, 4, false);
         assert!(!frame.update(&mut rgba, 0, 4));
@@ -224,7 +240,7 @@ mod tests {
 
     #[test]
     fn tile_extracts_contiguous_rows() {
-        let mut frame = Frame::new();
+        let mut frame = Frame::new(1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 

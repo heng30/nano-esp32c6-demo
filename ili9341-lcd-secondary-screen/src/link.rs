@@ -20,6 +20,7 @@
 //! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
 //! 不看屏幕就知道板子有没有收全。上位机实现见 `desktop/src/link.rs`，两边常量必须一起改。
 
+use core::sync::atomic::{AtomicU8, Ordering};
 use defmt::{Format, info, warn};
 use embassy_futures::yield_now;
 use embassy_sync::{
@@ -34,6 +35,9 @@ use crate::display::Display;
 
 /// 一个 tile 的边长（像素）。
 const TILE: usize = 16;
+/// 上位机下发的放大倍数：每块 tile 装的是 `(16/scale)²` 个源像素，
+/// 板子把每个源像素铺成 `scale × scale` 的方块，正好回填 16×16。
+static SCALE: AtomicU8 = AtomicU8::new(1);
 /// 一条消息最多几块 tile：上位机按帧自适应（小帧 1 块、大帧最多 32 块）。
 const MAX_TILES: usize = 32;
 /// 一块 tile 的像素字节数。
@@ -61,6 +65,8 @@ const CMD_PING: u8 = 0x02;
 const CMD_CLEAR: u8 = 0x03;
 /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样），不动屏幕。
 const CMD_RESET: u8 = 0x04;
+/// 控制命令：设置放大倍数（载荷 1 字节，必须是 16 的约数）。
+const CMD_SCALE: u8 = 0x05;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -214,8 +220,8 @@ fn tile_spans(
     })
 }
 
-/// 解一块游程编码的 tile。
-fn decode_rle(data: &[u8], pixels: &mut [u16; TILE * TILE]) -> bool {
+/// 解一块游程编码的 tile；目标像素数由调用方按当前放大倍数给出。
+fn decode_rle(data: &[u8], pixels: &mut [u16]) -> bool {
     let mut at = 0;
     let mut index = 0;
     while at < data.len() {
@@ -249,12 +255,17 @@ fn decode_rle(data: &[u8], pixels: &mut [u16; TILE * TILE]) -> bool {
 }
 
 /// 画一批 tile，返回 `(画好的块数, 这批字节的哈希之和)`。
+/// 每块里装的是 `(16/scale)²` 个源像素，这里按 scale 铺成 16×16 再整块送出。
 async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, u32) {
     let Some(spans) = tile_spans(tiles, count) else {
         warn!("bad tile layout in batch of {}", count);
         return (0, 0);
     };
 
+    // 放大倍数决定每块里的源像素边长；16 能被它整除，拼回来正好 TILE
+    let scale = usize::from(SCALE.load(Ordering::Relaxed)).clamp(1, TILE);
+    let arm = TILE / scale;
+    let mut source = [0u16; TILE * TILE];
     let mut pixels = [0u16; TILE * TILE];
     let mut drawn = 0u16;
     let mut hash = 0u32;
@@ -262,19 +273,34 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
         let data = &tiles[body..body + len];
         match tiles[head + 2] {
             KIND_RLE => {
-                if !decode_rle(data, &mut pixels) {
+                if !decode_rle(data, &mut source[..arm * arm]) {
                     warn!("bad rle tile, skipped");
                     continue;
                 }
             }
-            KIND_RAW if data.len() == RAW_LEN => {
-                for (dst, src) in pixels.iter_mut().zip(data.as_chunks::<2>().0) {
+            KIND_RAW if data.len() == arm * arm * 2 => {
+                for (dst, src) in source[..arm * arm].iter_mut().zip(data.as_chunks::<2>().0) {
                     *dst = u16::from_le_bytes([src[0], src[1]]);
                 }
             }
             other => {
                 warn!("bad tile encoding {} ({} bytes)", other, data.len());
                 continue;
+            }
+        }
+
+        // 每个源像素铺成 scale×scale，拼出一整块 16×16
+        if scale == 1 {
+            pixels.copy_from_slice(&source[..TILE * TILE]);
+        } else {
+            for y in 0..arm {
+                for x in 0..arm {
+                    let value = source[y * arm + x];
+                    for dy in 0..scale {
+                        let at = (y * scale + dy) * TILE + x * scale;
+                        pixels[at..at + scale].fill(value);
+                    }
+                }
             }
         }
 
@@ -582,6 +608,19 @@ where
 
         let status = match cmd {
             CMD_PING => ST_PONG,
+            CMD_SCALE => {
+                // 载荷 1 字节：放大倍数必须是小于等于 TILE 的约数，否则拒绝
+                let value = if total >= 4 { buf[3] } else { 0 };
+                if value >= 1 && value <= TILE as u8 && TILE as u8 % value == 0 {
+                    SCALE.store(value, Ordering::Relaxed);
+                    *SNAP.lock().await = Snap::new();
+                    info!("scale set to {}", value);
+                    ST_ACK
+                } else {
+                    warn!("bad scale {}", value);
+                    ST_NAK
+                }
+            }
             CMD_RESET => {
                 *SNAP.lock().await = Snap::new();
                 ST_ACK

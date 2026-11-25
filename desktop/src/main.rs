@@ -79,6 +79,11 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_BAUD)]
     baud: u32,
 
+    /// 放大倍数：抓屏只采 1/scale 的像素，板子再把每个像素铺成 scale×scale。
+    /// 必须是 16 的约数（1/2/4/8/16），像素数据随之减到 1/scale²
+    #[arg(long, default_value_t = 1)]
+    scale: usize,
+
     /// 初始目标帧率，运行中按板子上报的 busy_ms 自动调整（上限 30）
     #[arg(long, default_value_t = DEFAULT_FPS)]
     fps: f64,
@@ -363,16 +368,30 @@ fn run(args: Args) -> Result<(), String> {
 
     let links = connect(&candidates, args.baud)?;
     let labels: Vec<String> = links.iter().map(|(port, _)| short_label(port)).collect();
+    // 放大倍数只支持 16 的约数：每块 tile 装 (16/scale)² 个源像素
+    if args.scale == 0 || TILE % args.scale != 0 {
+        return Err(format!(
+            "bad --scale {}, must divide {TILE} (1/2/4/8/16)",
+            args.scale
+        ));
+    }
     println!(
-        "output {name} -> {} @ {} baud, scale to {WIDTH}x{HEIGHT}, {} fps",
+        "output {name} -> {} @ {} baud, {}x{} at scale {}, {} fps",
         labels.join(" + "),
         args.baud,
+        WIDTH / args.scale,
+        HEIGHT / args.scale,
+        args.scale,
         args.fps
     );
 
     // 清屏 + 重置走第一条链路就够：两条链路入同一个队列，板子状态是全局的
     let ports: Vec<String> = links.iter().map(|(port, _)| port.clone()).collect();
     let mut senders: Vec<Link> = links.into_iter().map(|(_, link)| link).collect();
+    // 先告诉板子放大倍数，再清屏/重置：板子按它决定每块 tile 里几个源像素
+    senders[0]
+        .set_scale(args.scale as u8)
+        .map_err(|error| error.to_string())?;
     senders[0].clear().map_err(|error| error.to_string())?;
     senders[0].reset().map_err(|error| error.to_string())?;
 
@@ -416,7 +435,7 @@ fn run(args: Args) -> Result<(), String> {
         sync_sig: Arc::new(AtomicBool::new(false)),
     };
 
-    let mut frame = Frame::new();
+    let mut frame = Frame::new(args.scale);
     let verbose = args.verbose;
     let mut last_callback: Option<Instant> = None;
     let result = screen_capture_wayland_wlr::capture_output_stream(config, |mut data| {
