@@ -43,12 +43,19 @@ overflow-checks = false
 static_cell = { version = "2.1", default-features = false }
 critical-section = { version = "1.2", default-features = false }
 
+clap = { version = "4.6", features = ["derive"] }
 font8x8 = { version = "0.3", default-features = false }
+serialport = { version = "4.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
 display-interface = { version = "0.5", default-features = false }
 ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
+
 kk-ui-rs = { version = "0.1", default-features = false, features = [
   "cjk-fonts",
+] }
+
+fast_image_resize = { version = "6.0", default-features = false, features = [
+  "std",
 ] }
 
 slint = { version = "1.19", default-features = false }
@@ -170,6 +177,6 @@ lvgl-rust = { version = "0.3", default-features = false, features = [
   "use-string-functions",
 ] }
 
-# 副屏上位机依赖
+# 副屏上位机依赖（宿主机命令行，编不到 riscv32）
 screen-capture = { path = "lib/screen-capture" }
 screen-capture-wayland-wlr = { path = "lib/screen-capture-wayland-wlr" }
