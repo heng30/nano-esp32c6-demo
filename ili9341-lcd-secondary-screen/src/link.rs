@@ -20,7 +20,7 @@
 //! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
 //! 不看屏幕就知道板子有没有收全。上位机实现见 `secondary-screen-desktop/src/link.rs`，两边常量必须一起改。
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use defmt::{Format, info, warn};
 use embassy_futures::yield_now;
 use embassy_futures::select::{Either, select};
@@ -40,8 +40,11 @@ const TILE: usize = 16;
 /// 屏的分辨率与采样倍数：上位机连上后由板子上报，它按 `1/SCALE` 采样、本端再铺回整屏。
 const PANEL_W: u16 = 320;
 const PANEL_H: u16 = 240;
-/// 采样倍数（1 表示不放大）：改成 2/4 可把像素数据降到 1/4、1/16，画质相应变粗。
-const SCALE: u8 = 1;
+/// 默认采样倍数（1 表示不放大）：改成 2/4 可把像素数据降到 1/4、1/16，画质相应变粗。
+/// 上位机可用 `0x05` 改写运行期的值。
+const SCALE_DEFAULT: u8 = 1;
+/// 当前采样倍数：上位机不传 `--scale` 就沿用这里的默认值。
+static SCALE: AtomicU8 = AtomicU8::new(SCALE_DEFAULT);
 /// 上位机确认几何信息之前的重发间隔。
 const ANNOUNCE_MS: u64 = 500;
 /// 上位机是否已确认收到几何信息；没确认就一直重报。
@@ -75,6 +78,8 @@ const CMD_CLEAR: u8 = 0x03;
 const CMD_RESET: u8 = 0x04;
 /// 控制命令：上位机确认收到几何信息。
 const CMD_GEO_ACK: u8 = 0x06;
+/// 控制命令：改写采样倍数（载荷 1 字节，必须是 TILE 的约数）。
+const CMD_SCALE: u8 = 0x05;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -273,7 +278,7 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
     };
 
     // 采样倍数决定每块里的源像素边长；16 能被它整除，拼回来正好 TILE
-    let scale = usize::from(SCALE).clamp(1, TILE);
+    let scale = usize::from(SCALE.load(Ordering::Relaxed)).clamp(1, TILE);
     let arm = TILE / scale;
     let mut source = [0u16; TILE * TILE];
     let mut pixels = [0u16; TILE * TILE];
@@ -571,7 +576,7 @@ fn geometry_report() -> [u8; 11] {
     reply[3..5].copy_from_slice(&5u16.to_le_bytes());
     reply[5..7].copy_from_slice(&PANEL_W.to_le_bytes());
     reply[7..9].copy_from_slice(&PANEL_H.to_le_bytes());
-    reply[9] = SCALE;
+    reply[9] = SCALE.load(Ordering::Relaxed);
     reply[10] = reply[2..10]
         .iter()
         .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
@@ -656,6 +661,18 @@ where
 
         let status = match cmd {
             CMD_PING => ST_PONG,
+            CMD_SCALE => {
+                let value = if total >= 4 { buf[3] } else { 0 };
+                if value >= 1 && value <= TILE as u8 && TILE as u8 % value == 0 {
+                    SCALE.store(value, Ordering::Relaxed);
+                    *SNAP.lock().await = Snap::new();
+                    info!("scale set to {}", value);
+                    ST_ACK
+                } else {
+                    warn!("bad scale {}", value);
+                    ST_NAK
+                }
+            }
             CMD_GEO_ACK => {
                 GEO_ACKED.store(true, Ordering::Relaxed);
                 info!("geometry acked by host");

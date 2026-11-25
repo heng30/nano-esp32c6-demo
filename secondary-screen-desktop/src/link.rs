@@ -36,6 +36,8 @@ const CMD_RESET: u8 = 0x04;
 
 /// 控制命令：上位机确认收到几何信息。
 const CMD_GEO_ACK: u8 = 0x06;
+/// 控制命令：改写板子的采样倍数（载荷 1 字节）。
+const CMD_SCALE: u8 = 0x05;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -198,6 +200,11 @@ impl Link {
     /// 板子最近上报的几何信息；还没收到过就是 `None`。
     pub fn geometry(&self) -> Option<Geometry> {
         self.geometry
+    }
+
+    /// 控制命令：改写板子的采样倍数，覆盖它自报的默认值。
+    pub fn set_scale(&mut self, scale: u8) -> Result<Report, LinkError> {
+        self.transact(CMD_SCALE, &[scale])
     }
 
     /// 控制命令：清屏。

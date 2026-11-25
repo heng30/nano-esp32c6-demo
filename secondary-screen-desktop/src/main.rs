@@ -81,6 +81,11 @@ struct Args {
     #[arg(long, default_value_t = DEFAULT_BAUD)]
     baud: u32,
 
+    /// 采样倍数，必须是 16 的约数（1/2/4/8/16）；不给就用板子自报的默认值。
+    /// 给 2 时抓屏只采 1/2 的像素、板子把每个像素铺成 2×2，像素数据降到约 1/4
+    #[arg(long)]
+    scale: Option<usize>,
+
     /// 初始目标帧率，运行中按板子上报的 busy_ms 自动调整（上限 30）
     #[arg(long, default_value_t = DEFAULT_FPS)]
     fps: f64,
@@ -384,12 +389,27 @@ fn run(args: Args) -> Result<(), String> {
         .ack_geometry()
         .map_err(|error| error.to_string())?;
 
-    let scale = usize::from(geometry.scale).max(1);
+    // 传了 --scale 就覆盖板子自报的默认值，并同步告诉它
+    let scale = match args.scale {
+        Some(requested) => {
+            if requested == 0 || !TILE.is_multiple_of(requested) {
+                return Err(format!(
+                    "bad --scale {requested}, must divide {TILE} (1/2/4/8/16)"
+                ));
+            }
+            links[0]
+                .1
+                .set_scale(requested as u8)
+                .map_err(|error| error.to_string())?;
+            requested
+        }
+        None => usize::from(geometry.scale).max(1),
+    };
     let (panel_w, panel_h) = (usize::from(geometry.width), usize::from(geometry.height));
     if panel_w == 0 || panel_h == 0 || panel_w % TILE != 0 || panel_h % TILE != 0 {
         return Err(format!("bad panel geometry {panel_w}x{panel_h}"));
     }
-    if TILE % scale != 0 {
+    if !TILE.is_multiple_of(scale) {
         return Err(format!("bad scale {scale} from board"));
     }
     println!(
@@ -579,14 +599,14 @@ fn send_loop(
     while !cancel.load(Ordering::Relaxed) {
         if !shared.alive[index].load(Ordering::Relaxed) {
             // 死口复活：先 ping 原连接（不复位板子）；重开只在万不得已时试
-            if last_ping.map_or(true, |at| at.elapsed() >= PING) {
+            if last_ping.is_none_or(|at| at.elapsed() >= PING) {
                 last_ping = Some(Instant::now());
                 let others_alive = (0..shared.alive.len())
                     .any(|other| other != index && shared.alive[other].load(Ordering::Relaxed));
                 let mut revived = link.ping().is_ok();
                 if !revived
                     && !others_alive
-                    && last_reopen.map_or(true, |at| at.elapsed() >= REVIVE_REOPEN)
+                    && last_reopen.is_none_or(|at| at.elapsed() >= REVIVE_REOPEN)
                 {
                     last_reopen = Some(Instant::now());
                     if let Ok(mut fresh) = Link::open(&port, baud)
@@ -608,7 +628,7 @@ fn send_loop(
         let job = shared.slot.lock().expect("slot poisoned").front().cloned();
         let Some(job) = job else {
             // 空闲：ping 一来拿板子状态、二来看链路死活
-            if last_ping.map_or(true, |at| at.elapsed() >= PING) {
+            if last_ping.is_none_or(|at| at.elapsed() >= PING) {
                 last_ping = Some(Instant::now());
                 probe(&mut link, &shared, &cancel, index, &mut ping_misses);
             }
@@ -625,7 +645,7 @@ fn send_loop(
         }
         // 数据不再回应答，板子状态只能从控制应答里拿：
         // 活口里序号最小的口每 500 ms 顺路 ping 一次
-        if last_ping.map_or(true, |at| at.elapsed() >= PING)
+        if last_ping.is_none_or(|at| at.elapsed() >= PING)
             && (0..shared.alive.len()).find(|&other| shared.alive[other].load(Ordering::Relaxed))
                 == Some(index)
         {
