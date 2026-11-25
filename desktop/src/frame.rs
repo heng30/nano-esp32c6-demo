@@ -1,19 +1,11 @@
-//! 抓屏帧 → 用 `fast_image_resize` 按 Box 滤波缩到 320×240 的 RGB565，再按 16×16 分块找脏块。
+//! 抓屏帧 → 用 `fast_image_resize` 按 Box 滤波缩到板子上报的分辨率，再按 16×16 分块找脏块。
 //!
 //! 用 Box（面积平均）而不是线性/三次插值：7.7 倍缩小下插值采样会让等宽字体的一像素竖线整条消失。
 
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer, images::Image};
 
-/// 目标宽度（像素），与固件一致。
-pub const WIDTH: usize = 320;
-/// 目标高度（像素），与固件一致。
-pub const HEIGHT: usize = 240;
-/// 一个 tile 的边长（像素）。
+/// 一个 tile 的边长（像素），与固件一致。
 pub const TILE: usize = 16;
-/// 每行的 tile 数。
-pub const TILES_X: usize = WIDTH / TILE;
-/// tile 的行数。
-pub const TILES_Y: usize = HEIGHT / TILE;
 
 /// 一块要发给板子的像素。
 #[derive(Clone, Copy)]
@@ -28,7 +20,7 @@ pub struct Tile {
     pub pixels: [u16; TILE * TILE],
 }
 
-/// 缩放器、缩放后的帧、当前帧、上一帧与脏块列表（块下标 = 行 × `TILES_X` + 列）。
+/// 缩放器、缩放后的帧、当前帧、上一帧与脏块列表（块下标 = 行 × `20` + 列）。
 pub struct Frame {
     /// 复用的缩放器，内部临时缓冲只在换源尺寸时才重建。
     resizer: Resizer,
@@ -36,7 +28,11 @@ pub struct Frame {
     options: ResizeOptions,
     /// 每边的源像素数（`TILE / scale`）。
     arm: usize,
-    /// 缩放结果：`WIDTH/scale` × `HEIGHT/scale` 的 RGBA。
+    /// 每行的 tile 数。
+    tiles_x: usize,
+    /// tile 的行数。
+    tiles_y: usize,
+    /// 缩放结果：`面板尺寸 / scale` 的 RGBA。
     scaled: Image<'static>,
     /// 缩放后的像素宽度（行跨距）。
     width: usize,
@@ -48,12 +44,13 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// `scale` 是放大倍数：抓屏缩到 `1/scale`，每块只采 `(16/scale)²` 个源像素，
-    /// 板子再把每个像素铺成 `scale × scale` 回填整屏。
-    pub fn new(scale: usize) -> Self {
+    /// `width` × `height` 是板子上报的面板分辨率，`scale` 是它的采样倍数：
+    /// 抓屏缩到 `1/scale`，每块只采 `(16/scale)²` 个源像素，板子再铺成 `scale × scale`。
+    pub fn new(width: usize, height: usize, scale: usize) -> Self {
         let scale = scale.clamp(1, TILE);
-        let (width, height) = (WIDTH / scale, HEIGHT / scale);
         let arm = TILE / scale;
+        let (tiles_x, tiles_y) = (width / TILE, height / TILE);
+        let (width, height) = (width / scale, height / scale);
         // 抓屏是 Xrgb8888，X 字节不可信（常常是 0），必须关掉 alpha 预乘，否则整屏会变黑
         let options = ResizeOptions {
             mul_div_alpha: false,
@@ -65,9 +62,11 @@ impl Frame {
             arm,
             scaled: Image::new(width as u32, height as u32, PixelType::U8x4),
             width,
+            tiles_x,
+            tiles_y,
             cur: vec![0; width * height],
             prev: vec![0; width * height],
-            dirty: Vec::with_capacity(TILES_X * TILES_Y),
+            dirty: Vec::with_capacity(tiles_x * tiles_y),
             dirty_all: false,
         }
     }
@@ -107,10 +106,10 @@ impl Frame {
         self.dirty.clear();
         let force = self.dirty_all;
         self.dirty_all = false;
-        for ty in 0..TILES_Y {
-            for tx in 0..TILES_X {
+        for ty in 0..self.tiles_y {
+            for tx in 0..self.tiles_x {
                 if force || self.tile_changed(tx, ty) {
-                    self.dirty.push(ty * TILES_X + tx);
+                    self.dirty.push(ty * self.tiles_x + tx);
                 }
             }
         }
@@ -130,7 +129,7 @@ impl Frame {
 
     /// 取第 `index` 块，像素按行优先展开成连续 `arm * arm` 个。
     pub fn tile(&self, index: usize) -> Tile {
-        let (col, row) = (index % TILES_X, index / TILES_X);
+        let (col, row) = (index % self.tiles_x, index / self.tiles_x);
         let arm = self.arm;
         let mut pixels = [0u16; TILE * TILE];
         for line in 0..arm {
@@ -183,31 +182,31 @@ mod tests {
 
     #[test]
     fn scales_whole_frame_into_the_panel() {
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 
         assert_eq!(frame.cur[0], 0x0000);
-        assert_eq!(frame.cur[WIDTH * HEIGHT - 1], 0xFFFF);
+        assert_eq!(frame.cur[320 * 240 - 1], 0xFFFF);
         // prev 全零，所以只有右半（白）那几列算脏块
-        assert_eq!(frame.dirty().len(), TILES_X / 2 * TILES_Y);
+        assert_eq!(frame.dirty().len(), 20 / 2 * 15);
         assert!(!frame.dirty().contains(&0));
-        assert!(frame.dirty().contains(&(TILES_X - 1)));
+        assert!(frame.dirty().contains(&(20 - 1)));
     }
 
     #[test]
     fn ignores_alpha_channel() {
         // Xrgb 抓屏的 alpha 字节是 0，关闭 alpha 预乘后颜色不能被它吃掉
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 
-        assert_eq!(frame.cur[WIDTH * HEIGHT - 1], 0xFFFF);
+        assert_eq!(frame.cur[320 * 240 - 1], 0xFFFF);
     }
 
     #[test]
     fn second_identical_frame_has_no_dirty_tile() {
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         let mut rgba = source(640, 480, true);
 
         assert!(frame.update(&mut rgba, 640, 480));
@@ -217,7 +216,7 @@ mod tests {
 
     #[test]
     fn invalidate_marks_every_tile_dirty() {
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
         assert!(!frame.dirty().is_empty());
@@ -227,12 +226,12 @@ mod tests {
 
         frame.invalidate();
         assert!(frame.update(&mut rgba, 640, 480));
-        assert_eq!(frame.dirty().len(), TILES_X * TILES_Y);
+        assert_eq!(frame.dirty().len(), 20 * 15);
     }
 
     #[test]
     fn rejects_short_buffer() {
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         assert!(!frame.update(&mut [], 640, 480));
         let mut rgba = source(4, 4, false);
         assert!(!frame.update(&mut rgba, 0, 4));
@@ -240,12 +239,12 @@ mod tests {
 
     #[test]
     fn tile_extracts_contiguous_rows() {
-        let mut frame = Frame::new(1);
+        let mut frame = Frame::new(320, 240, 1);
         let mut rgba = source(640, 480, true);
         assert!(frame.update(&mut rgba, 640, 480));
 
-        let tile = frame.tile(TILES_X - 1);
-        assert_eq!((tile.col, tile.row), ((TILES_X - 1) as u8, 0));
+        let tile = frame.tile(20 - 1);
+        assert_eq!((tile.col, tile.row), ((20 - 1) as u8, 0));
         assert_eq!(tile.pixels[TILE * TILE - 1], 0xFFFF);
     }
 }

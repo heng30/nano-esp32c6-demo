@@ -20,14 +20,16 @@
 //! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
 //! 不看屏幕就知道板子有没有收全。上位机实现见 `desktop/src/link.rs`，两边常量必须一起改。
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use defmt::{Format, info, warn};
 use embassy_futures::yield_now;
+use embassy_futures::select::{Either, select};
 use embassy_sync::{
     blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, mutex::Mutex,
 };
 use embedded_graphics::{pixelcolor::RgbColor, prelude::*};
 use embedded_io_async::{Read, Write};
+use embassy_time::Timer;
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
@@ -35,9 +37,15 @@ use crate::display::Display;
 
 /// 一个 tile 的边长（像素）。
 const TILE: usize = 16;
-/// 上位机下发的放大倍数：每块 tile 装的是 `(16/scale)²` 个源像素，
-/// 板子把每个源像素铺成 `scale × scale` 的方块，正好回填 16×16。
-static SCALE: AtomicU8 = AtomicU8::new(1);
+/// 屏的分辨率与采样倍数：上位机连上后由板子上报，它按 `1/SCALE` 采样、本端再铺回整屏。
+const PANEL_W: u16 = 320;
+const PANEL_H: u16 = 240;
+/// 采样倍数（1 表示不放大）：改成 2/4 可把像素数据降到 1/4、1/16，画质相应变粗。
+const SCALE: u8 = 1;
+/// 上位机确认几何信息之前的重发间隔。
+const ANNOUNCE_MS: u64 = 500;
+/// 上位机是否已确认收到几何信息；没确认就一直重报。
+static GEO_ACKED: AtomicBool = AtomicBool::new(false);
 /// 一条消息最多几块 tile：上位机按帧自适应（小帧 1 块、大帧最多 32 块）。
 const MAX_TILES: usize = 32;
 /// 一块 tile 的像素字节数。
@@ -65,11 +73,13 @@ const CMD_PING: u8 = 0x02;
 const CMD_CLEAR: u8 = 0x03;
 /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样），不动屏幕。
 const CMD_RESET: u8 = 0x04;
-/// 控制命令：设置放大倍数（载荷 1 字节，必须是 16 的约数）。
-const CMD_SCALE: u8 = 0x05;
+/// 控制命令：上位机确认收到几何信息。
+const CMD_GEO_ACK: u8 = 0x06;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
+/// 板子上报几何信息（未确认前持续重发）。
+const RSP_GEOMETRY: u8 = 0x85;
 /// 应答状态：收到并处理完。
 const ST_ACK: u8 = 0;
 /// 应答状态：校验或命令错，上位机应重发。
@@ -262,8 +272,8 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
         return (0, 0);
     };
 
-    // 放大倍数决定每块里的源像素边长；16 能被它整除，拼回来正好 TILE
-    let scale = usize::from(SCALE.load(Ordering::Relaxed)).clamp(1, TILE);
+    // 采样倍数决定每块里的源像素边长；16 能被它整除，拼回来正好 TILE
+    let scale = usize::from(SCALE).clamp(1, TILE);
     let arm = TILE / scale;
     let mut source = [0u16; TILE * TILE];
     let mut pixels = [0u16; TILE * TILE];
@@ -553,6 +563,21 @@ pub async fn render(display: Display) -> ! {
     }
 }
 
+/// 几何信息上报：`RSP_GEOMETRY | len=5 | 宽(2) | 高(2) | 倍数(1) | sum`。
+fn geometry_report() -> [u8; 11] {
+    let mut reply = [0u8; 11];
+    reply[0..2].copy_from_slice(&SYNC);
+    reply[2] = RSP_GEOMETRY;
+    reply[3..5].copy_from_slice(&5u16.to_le_bytes());
+    reply[5..7].copy_from_slice(&PANEL_W.to_le_bytes());
+    reply[7..9].copy_from_slice(&PANEL_H.to_le_bytes());
+    reply[9] = SCALE;
+    reply[10] = reply[2..10]
+        .iter()
+        .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+    reply
+}
+
 /// 把应答写回链路。
 async fn reply<T: Write>(link: &mut T, report: &[u8])
 where
@@ -574,15 +599,38 @@ where
     let mut reader = Reader::new();
     let mut buf = FREE.receive().await;
     loop {
-        let total = match read_message(&mut reader, link, &mut buf).await {
-            Ok(0) => {
-                warn!("bad length, message dropped");
-                continue;
+        // 上位机确认收到几何信息之前，隔一段时间重报一次；它一开始推流就说明已经知道尺寸
+        let total = if GEO_ACKED.load(Ordering::Relaxed) {
+            match read_message(&mut reader, link, &mut buf).await {
+                Ok(0) => {
+                    warn!("bad length, message dropped");
+                    continue;
+                }
+                Ok(total) => total,
+                Err(error) => {
+                    warn!("read failed: {:?}", error);
+                    continue;
+                }
             }
-            Ok(total) => total,
-            Err(error) => {
-                warn!("read failed: {:?}", error);
-                continue;
+        } else {
+            reply(link, &geometry_report()).await;
+            // 未确认阶段上位机不会发数据，所以超时打断读取不会丢半个消息
+            match select(
+                read_message(&mut reader, link, &mut buf),
+                Timer::after_millis(ANNOUNCE_MS),
+            )
+            .await
+            {
+                Either::First(Ok(0)) => {
+                    warn!("bad length, message dropped");
+                    continue;
+                }
+                Either::First(Ok(total)) => total,
+                Either::First(Err(error)) => {
+                    warn!("read failed: {:?}", error);
+                    continue;
+                }
+                Either::Second(()) => continue,
             }
         };
 
@@ -608,18 +656,10 @@ where
 
         let status = match cmd {
             CMD_PING => ST_PONG,
-            CMD_SCALE => {
-                // 载荷 1 字节：放大倍数必须是小于等于 TILE 的约数，否则拒绝
-                let value = if total >= 4 { buf[3] } else { 0 };
-                if value >= 1 && value <= TILE as u8 && TILE as u8 % value == 0 {
-                    SCALE.store(value, Ordering::Relaxed);
-                    *SNAP.lock().await = Snap::new();
-                    info!("scale set to {}", value);
-                    ST_ACK
-                } else {
-                    warn!("bad scale {}", value);
-                    ST_NAK
-                }
+            CMD_GEO_ACK => {
+                GEO_ACKED.store(true, Ordering::Relaxed);
+                info!("geometry acked by host");
+                ST_ACK
             }
             CMD_RESET => {
                 *SNAP.lock().await = Snap::new();

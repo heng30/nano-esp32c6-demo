@@ -19,9 +19,11 @@ use screen_capture::CaptureStreamConfig;
 mod frame;
 mod link;
 
-use frame::{Frame, HEIGHT, TILE, Tile, WIDTH};
+use frame::{Frame, TILE, Tile};
 use link::{Link, LinkError, Report};
 
+/// 等板子上报分辨率的时长上限：它一启动就在报、每 500 ms 一轮，3 秒够跑好几轮。
+const GEOMETRY_WAIT: Duration = Duration::from_secs(3);
 /// 默认帧率（初始目标，之后按板子上报的能力动态调整）。
 const DEFAULT_FPS: f64 = 10.0;
 /// 帧率上限，与固件一致。
@@ -78,11 +80,6 @@ struct Args {
     /// 波特率（USB CDC 链路忽略；走 UART0 时要与固件一致）
     #[arg(long, default_value_t = DEFAULT_BAUD)]
     baud: u32,
-
-    /// 放大倍数：抓屏只采 1/scale 的像素，板子再把每个像素铺成 scale×scale。
-    /// 必须是 16 的约数（1/2/4/8/16），像素数据随之减到 1/scale²
-    #[arg(long, default_value_t = 1)]
-    scale: usize,
 
     /// 初始目标帧率，运行中按板子上报的 busy_ms 自动调整（上限 30）
     #[arg(long, default_value_t = DEFAULT_FPS)]
@@ -366,32 +363,45 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no usb serial port found".into());
     }
 
-    let links = connect(&candidates, args.baud)?;
+    let mut links = connect(&candidates, args.baud)?;
     let labels: Vec<String> = links.iter().map(|(port, _)| short_label(port)).collect();
-    // 放大倍数只支持 16 的约数：每块 tile 装 (16/scale)² 个源像素
-    if args.scale == 0 || TILE % args.scale != 0 {
-        return Err(format!(
-            "bad --scale {}, must divide {TILE} (1/2/4/8/16)",
-            args.scale
-        ));
+
+    // 分辨率由板子上报：收到并确认之前不开始抓屏，没收到确认它会一直重报
+    let deadline = Instant::now() + GEOMETRY_WAIT;
+    let mut geometry = links.iter().find_map(|(_, link)| link.geometry());
+    while geometry.is_none() && Instant::now() < deadline {
+        for (_, link) in links.iter_mut() {
+            let _ = link.ping();
+        }
+        geometry = links.iter().find_map(|(_, link)| link.geometry());
+        if geometry.is_none() {
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    let geometry = geometry.ok_or("board did not report its resolution")?;
+    links[0]
+        .1
+        .ack_geometry()
+        .map_err(|error| error.to_string())?;
+
+    let scale = usize::from(geometry.scale).max(1);
+    let (panel_w, panel_h) = (usize::from(geometry.width), usize::from(geometry.height));
+    if panel_w == 0 || panel_h == 0 || panel_w % TILE != 0 || panel_h % TILE != 0 {
+        return Err(format!("bad panel geometry {panel_w}x{panel_h}"));
+    }
+    if TILE % scale != 0 {
+        return Err(format!("bad scale {scale} from board"));
     }
     println!(
-        "output {name} -> {} @ {} baud, {}x{} at scale {}, {} fps",
+        "output {name} -> {} @ {} baud, panel {panel_w}x{panel_h} at scale {scale}, {} fps",
         labels.join(" + "),
         args.baud,
-        WIDTH / args.scale,
-        HEIGHT / args.scale,
-        args.scale,
         args.fps
     );
 
     // 清屏 + 重置走第一条链路就够：两条链路入同一个队列，板子状态是全局的
     let ports: Vec<String> = links.iter().map(|(port, _)| port.clone()).collect();
     let mut senders: Vec<Link> = links.into_iter().map(|(_, link)| link).collect();
-    // 先告诉板子放大倍数，再清屏/重置：板子按它决定每块 tile 里几个源像素
-    senders[0]
-        .set_scale(args.scale as u8)
-        .map_err(|error| error.to_string())?;
     senders[0].clear().map_err(|error| error.to_string())?;
     senders[0].reset().map_err(|error| error.to_string())?;
 
@@ -435,7 +445,7 @@ fn run(args: Args) -> Result<(), String> {
         sync_sig: Arc::new(AtomicBool::new(false)),
     };
 
-    let mut frame = Frame::new(args.scale);
+    let mut frame = Frame::new(panel_w, panel_h, scale);
     let verbose = args.verbose;
     let mut last_callback: Option<Instant> = None;
     let result = screen_capture_wayland_wlr::capture_output_stream(config, |mut data| {

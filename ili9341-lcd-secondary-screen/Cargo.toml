@@ -21,3 +21,4 @@ embedded-graphics.workspace = true
 embedded-io-async.workspace = true
 embassy-sync.workspace = true
 embassy-futures.workspace = true
+embassy-time.workspace = true

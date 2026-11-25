@@ -33,11 +33,16 @@ const CMD_PING: u8 = 0x02;
 const CMD_CLEAR: u8 = 0x03;
 /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样）。
 const CMD_RESET: u8 = 0x04;
-/// 控制命令：设置放大倍数（载荷 1 字节）。
-const CMD_SCALE: u8 = 0x05;
+
+/// 控制命令：上位机确认收到几何信息。
+const CMD_GEO_ACK: u8 = 0x06;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
+/// 板子上报的几何信息。
+const RSP_GEOMETRY: u8 = 0x85;
+/// 几何信息载荷长度：宽(2) + 高(2) + 倍数(1)。
+const GEOMETRY_LEN: usize = 5;
 /// 应答状态：处理完。
 const ST_ACK: u8 = 0;
 /// 应答状态：对查询的回应。
@@ -97,10 +102,23 @@ impl std::fmt::Display for LinkError {
     }
 }
 
+/// 板子上报的几何信息。
+#[derive(Clone, Copy)]
+pub struct Geometry {
+    /// 面板宽度（像素）。
+    pub width: u16,
+    /// 面板高度（像素）。
+    pub height: u16,
+    /// 采样倍数：抓屏取 `1/scale`，板子把每个像素铺成 `scale × scale`。
+    pub scale: u8,
+}
+
 /// 串口连接与复用中的打包缓冲。
 pub struct Link {
     port: Box<dyn SerialPort>,
     msg: Vec<u8>,
+    /// 板子最近一次上报的几何信息（未确认前会持续上报）。
+    geometry: Option<Geometry>,
 }
 
 impl Link {
@@ -116,6 +134,7 @@ impl Link {
         Ok(Self {
             port,
             msg: Vec::with_capacity(MSG_MAX),
+            geometry: None,
         })
     }
 
@@ -171,9 +190,14 @@ impl Link {
         self.transact(CMD_RESET, &[])
     }
 
-    /// 控制命令：设置板子的放大倍数（每块 tile 装 `(16/scale)²` 个源像素）。
-    pub fn set_scale(&mut self, scale: u8) -> Result<Report, LinkError> {
-        self.transact(CMD_SCALE, &[scale])
+    /// 控制命令：确认收到几何信息（不确认板子会一直重报）。
+    pub fn ack_geometry(&mut self) -> Result<Report, LinkError> {
+        self.transact(CMD_GEO_ACK, &[])
+    }
+
+    /// 板子最近上报的几何信息；还没收到过就是 `None`。
+    pub fn geometry(&self) -> Option<Geometry> {
+        self.geometry
     }
 
     /// 控制命令：清屏。
@@ -234,49 +258,68 @@ impl Link {
         let mut byte = [0u8; 1];
         let mut prev = 0u8;
         loop {
-            self.read_exact(&mut byte)?;
-            if prev == SYNC[0] && byte[0] == SYNC[1] {
-                break;
+            // 扫同步字
+            loop {
+                self.read_exact(&mut byte)?;
+                if prev == SYNC[0] && byte[0] == SYNC[1] {
+                    break;
+                }
+                prev = byte[0];
             }
-            prev = byte[0];
-        }
 
-        let mut body = [0u8; 3 + REPLY_MAX + 1];
-        self.read_exact(&mut body[..3])?;
-        if body[0] != RSP_REPORT {
-            // 坏应答多半是字节流错位/损坏，重发后重新扫同步字即可
-            return Err(LinkError::Timeout(format!(
-                "unexpected reply 0x{:02x}",
-                body[0]
-            )));
-        }
-        let len = usize::from(u16::from_le_bytes([body[1], body[2]]));
-        if len != REPLY_MAX {
-            return Err(LinkError::Timeout(format!("bad reply length {len}")));
-        }
-        self.read_exact(&mut body[3..3 + len + 1])?;
+            let mut body = [0u8; 3 + REPLY_MAX + 1];
+            self.read_exact(&mut body[..3])?;
+            let len = usize::from(u16::from_le_bytes([body[1], body[2]]));
+            if body[0] == RSP_GEOMETRY && len == GEOMETRY_LEN {
+                // 未确认前板子会一直重报，收到就记下，不影响本端等的是哪条应答
+                self.read_exact(&mut body[3..3 + len + 1])?;
+                let sum = body[..3 + len]
+                    .iter()
+                    .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+                if sum == body[3 + len] {
+                    self.geometry = Some(Geometry {
+                        width: u16::from_le_bytes([body[3], body[4]]),
+                        height: u16::from_le_bytes([body[5], body[6]]),
+                        scale: body[7],
+                    });
+                }
+                prev = SYNC[1];
+                continue;
+            }
+            if body[0] != RSP_REPORT {
+                // 坏应答多半是字节流错位/损坏，重发后重新扫同步字即可
+                return Err(LinkError::Timeout(format!(
+                    "unexpected reply 0x{:02x}",
+                    body[0]
+                )));
+            }
+            if len != REPLY_MAX {
+                return Err(LinkError::Timeout(format!("bad reply length {len}")));
+            }
+            self.read_exact(&mut body[3..3 + len + 1])?;
 
-        if std::env::var_os("SCREEN_DEBUG").is_some() {
-            eprintln!(
-                "rx cmd 0x{:02x} len {len} body {:02x?} sum 0x{:02x}",
-                body[0],
-                &body[3..3 + len],
-                body[3 + len]
-            );
-        }
+            if std::env::var_os("SCREEN_DEBUG").is_some() {
+                eprintln!(
+                    "rx cmd 0x{:02x} len {len} body {:02x?} sum 0x{:02x}",
+                    body[0],
+                    &body[3..3 + len],
+                    body[3 + len]
+                );
+            }
 
-        let sum = body[..3 + len]
-            .iter()
-            .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
-        if sum != body[3 + len] {
-            return Err(LinkError::Timeout("bad reply checksum".to_string()));
-        }
+            let sum = body[..3 + len]
+                .iter()
+                .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+            if sum != body[3 + len] {
+                return Err(LinkError::Timeout("bad reply checksum".to_string()));
+            }
 
-        Ok(Report {
-            status: body[3] & 0x7F,
-            fps: body[4],
-            busy_ms: u16::from_le_bytes([body[5], body[6]]),
-        })
+            return Ok(Report {
+                status: body[3] & 0x7F,
+                fps: body[4],
+                busy_ms: u16::from_le_bytes([body[5], body[6]]),
+            });
+        }
     }
 }
 
