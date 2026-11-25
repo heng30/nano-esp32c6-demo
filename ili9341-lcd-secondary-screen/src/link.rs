@@ -18,7 +18,7 @@
 //!
 //! 应答 `RSP_REPORT` 的载荷：`status(1) | fps(1) | frame(2) | tiles(2) | hash(4)`。
 //! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
-//! 不看屏幕就知道板子有没有收全。上位机实现见 `desktop/src/link.rs`，两边常量必须一起改。
+//! 不看屏幕就知道板子有没有收全。上位机实现见 `secondary-screen-desktop/src/link.rs`，两边常量必须一起改。
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use defmt::{Format, info, warn};

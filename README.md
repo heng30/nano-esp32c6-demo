@@ -48,8 +48,8 @@ nanoESP32-C6（MuseLab v1.0），模组为 `ESP32-C6-WROOM-1-N16`（芯片 rev v
 | `kk-ui-rs/` | KK_UI（单色菜单 UI）的 Rust 移植库（只依赖 `core`，画布尺寸由应用给定）：页式 1 bit 画布、首页/菜单/信息页/自绘页、编辑器与弹窗；`ili9341-lcd-kkui/` 把原版标准 Demo 跑在 ILI9341 上 | 主机上 `cd kk-ui-rs && cargo run --example sim --features sim` 直接看效果（eframe 窗口 + 截图）；[说明](kk-ui-rs/README.md) |
 | `openc6-bios-rs/` | OpenC6 BIOS 微内核（从上游 ESP-IDF C 项目移植）：U-Mode PMP 沙箱 + `ecall`、日志式环形 flash 文件系统、Micro UNIX Shell、Wi-Fi AP/STA + BIOS Setup Web UI、PXE/OTA | [链接](openc6-bios-rs/README.md) |
 
-`desktop/` 与 `lib/` 里的 `screen-capture`、`screen-capture-wayland-wlr` 是**宿主机** crate（Wayland 抓屏 + 命令行上位机），
-不编进固件、也不进 riscv32 的构建路径：上位机用法见 [desktop/README.md](desktop/README.md)。
+`secondary-screen-desktop/` 与 `lib/` 里的 `screen-capture`、`screen-capture-wayland-wlr` 是**宿主机** crate（Wayland 抓屏 + 命令行上位机），
+不编进固件、也不进 riscv32 的构建路径：上位机用法见 [secondary-screen-desktop/README.md](secondary-screen-desktop/README.md)。
 
 `esp32c6-top50/`（只读的上游仓库克隆与报告）已 exclude，不参与构建。
 

@@ -1,4 +1,4 @@
-# desktop
+# secondary-screen-desktop
 
 `ili9341-lcd-secondary-screen` 的上位机（命令行，`clap` 解析参数）：把整个 Wayland 输出**缩放**成 320×240，
 按 16×16 分块 diff，只把变化的块走串口推给板子。

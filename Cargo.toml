@@ -19,7 +19,7 @@ members = [
   "ili9341-lcd-lvgl",
   "ili9341-lcd-kkui",
   "ili9341-lcd-secondary-screen",
-  "desktop",
+  "secondary-screen-desktop",
 ]
 
 exclude = ["esp32c6-top50"]

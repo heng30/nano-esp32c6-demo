@@ -1,6 +1,6 @@
 # ili9341-lcd-secondary-screen
 
-把这块 ILI9341 当桌面副屏：上位机（`../desktop/`）抓 Wayland 输出的一个 320×240 区域，
+把这块 ILI9341 当桌面副屏：上位机（`../secondary-screen-desktop/`）抓 Wayland 输出的一个 320×240 区域，
 按 16×16 分块 diff，只把变化的块走串口推过来，板子按块写屏。**不做整屏刷新**，
 光标、时钟、窗口标题这类小改动只传几十到几百字节。
 
@@ -65,13 +65,13 @@ C6 D5 | cmd(1) | len(2) | payload(len) | sum8(1)
 之后收到的过期帧块直接丢。渲染任务取到一块就画一块（每块还让出 CPU 让收帧任务排空
 FIFO），不存在攒批。推进由渲染任务单一所有者判定，无需加锁。
 
-两边常量必须一起改：本目录 `src/link.rs` 与 `../desktop/src/link.rs`、`../desktop/src/frame.rs`。
+两边常量必须一起改：本目录 `src/link.rs` 与 `../secondary-screen-desktop/src/link.rs`、`../secondary-screen-desktop/src/frame.rs`。
 
 ## 吞吐与上限
 
 实测（一条消息一块、无数据应答）：单 CDC 稳态约 **280 KB/s**，双口（CDC + UART0）约
 **320 KB/s、板子实绘 24 fps**——双口真并行，慢口逐块贡献不拖快口；多口调度见
-`../desktop/README.md`。
+`../secondary-screen-desktop/README.md`。
 
 压缩效果（实测，占原始字节的比例）：
 
@@ -104,8 +104,8 @@ UART0（板载 CH343P）链路：2 Mbaud 线路上限约 196 KB/s，修掉 RX FI
 # 板子：烧固件（执行后常驻收帧）
 cargo run --release
 
-# 上位机：见 ../desktop/README.md
-cargo run --manifest-path ../desktop/Cargo.toml -- --verbose
+# 上位机：见 ../secondary-screen-desktop/README.md
+cargo run --manifest-path ../secondary-screen-desktop/Cargo.toml -- --verbose
 ```
 
 `release` 是必须的：dev 构建的 8080 写时序撑不住。
