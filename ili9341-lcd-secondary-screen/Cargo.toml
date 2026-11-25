@@ -18,4 +18,6 @@ ili9341.workspace = true
 display-interface.workspace = true
 embedded-hal.workspace = true
 embedded-graphics.workspace = true
-embedded-io.workspace = true
+embedded-io-async.workspace = true
+embassy-sync.workspace = true
+embassy-futures.workspace = true

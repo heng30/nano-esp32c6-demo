@@ -1,23 +1,32 @@
-//! 上位机 ↔ 板子的命令协议。
+//! 上位机 ↔ 板子的命令协议（v2）。
 //!
-//! 统一信封（多字节整数一律小端）：
+//! 信封（多字节整数一律小端）：
 //!
 //! ```text
 //! C6 D5 | cmd(1) | len(2, LE) | payload(len) | sum8(1)
 //! ```
 //!
-//! `sum8` 是 `cmd` 到载荷最后一字节的逐字节和（u8 回绕）。命令分两类：
+//! 数据命令 `CMD_TILES` 的载荷：
 //!
-//! - **数据命令** `0x0X`（上位机 → 板子）：`CMD_TILES` 传一块或一批 16×16 的 RGB565 图像
-//! - **控制命令** `0x0X`（上位机 → 板子）：`CMD_PING` 查询、`CMD_CLEAR` 清屏
-//! - **应答** `0x81`（板子 → 上位机）：`status + fps`，板子只发这一类控制帧
+//! ```text
+//! frame(2) | flags(1) | batch(1) | total(1) | tile*
+//! ```
 //!
-//! 严格一问一答：板子回一帧后上位机才发下一条，所以接收缓冲只需装得下一条消息，
-//! 画屏期间也不会有数据继续涌来。上位机的实现见 `desktop/src/link.rs`，两边常量必须一起改。
+//! - `frame`：帧号，板子靠它丢过期数据、认出「下一帧」
+//! - `flags` 最低位 = 本帧最后一批
+//! - `batch` / `total`：本批在本帧里的序号与总批数
+//!
+//! 应答 `RSP_REPORT` 的载荷：`status(1) | fps(1) | frame(2) | tiles(2) | hash(4)`。
+//! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
+//! 不看屏幕就知道板子有没有收全。上位机实现见 `desktop/src/link.rs`，两边常量必须一起改。
 
 use defmt::{Format, info, warn};
+use embassy_futures::yield_now;
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, mutex::Mutex,
+};
 use embedded_graphics::{pixelcolor::RgbColor, prelude::*};
-use embedded_io::{Read, Write};
+use embedded_io_async::{Read, Write};
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
@@ -26,8 +35,10 @@ use crate::display::Display;
 /// 一个 tile 的边长（像素）。
 const TILE: usize = 16;
 /// 一批最多几个 tile。越大，每条消息的固定开销（同步、校验、等应答）摊得越薄，
-/// 代价是静态接收缓冲 33 KB。
-const MAX_TILES: usize = 64;
+/// 代价是接收缓冲和「下一帧」缓存占的静态内存。
+const MAX_TILES: usize = 32;
+/// 最多缓存几批「下一帧」的数据；满了就不再等上一帧的迟到批次，直接推进。
+const PENDING: usize = 5;
 /// 一块 tile 的像素字节数。
 const RAW_LEN: usize = TILE * TILE * 2;
 /// 一块 tile 的编码：原样。
@@ -36,19 +47,25 @@ const KIND_RAW: u8 = 0;
 const KIND_RLE: u8 = 1;
 /// 一块 tile 的头：列、行、编码、载荷长度（u16）。
 const TILE_HEAD: usize = 5;
-/// `CMD_TILES` 载荷的最大长度：标志位 + 一批 tile。
-const PAYLOAD_MAX: usize = 1 + MAX_TILES * (TILE_HEAD + RAW_LEN);
+/// 数据载荷头：帧号、标志、本批块数、批序号、批总数。
+const BATCH_HEAD: usize = 6;
+/// `CMD_TILES` 载荷的最大长度：批头 + 一批 tile。
+const PAYLOAD_MAX: usize = BATCH_HEAD + MAX_TILES * (TILE_HEAD + RAW_LEN);
 /// 一条消息的最大字节数（不含同步字）：`cmd + len + payload + sum`。
 const MSG_MAX: usize = 3 + PAYLOAD_MAX + 1;
+/// 接收缓冲长度（对外的别名）。
+pub const MSG_BUF: usize = MSG_MAX;
 /// 消息头的同步字。
 const SYNC: [u8; 2] = [0xC6, 0xD5];
 
 /// 数据命令：一批 tile。
 const CMD_TILES: u8 = 0x01;
-/// 控制命令：查询，板子回 `ST_PONG`。
+/// 控制命令：查询。
 const CMD_PING: u8 = 0x02;
 /// 控制命令：清屏。
 const CMD_CLEAR: u8 = 0x03;
+/// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样），不动屏幕。
+const CMD_RESET: u8 = 0x04;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -58,20 +75,32 @@ const ST_ACK: u8 = 0;
 const ST_NAK: u8 = 1;
 /// 应答状态：对 `CMD_PING` 的回应。
 const ST_PONG: u8 = 2;
-/// 应答载荷长度：状态 + 帧率 + 本帧忙碌毫秒数。
-const REPORT_LEN: u16 = 4;
+/// 应答载荷长度：状态 + 帧率 + 忙碌毫秒 + 帧号 + 本帧块数 + 本帧哈希。
+const REPORT_LEN: u16 = 12;
+/// 一条应答的总字节数：同步 + 命令 + 长度 + 载荷 + 校验。
+const REPLY_MAX: usize = 2 + 3 + REPORT_LEN as usize + 1;
 
-/// `CMD_TILES` 载荷首字节的最高位：本帧最后一批，用来统计实际帧率。
-const LAST_BATCH: u8 = 0x80;
+/// 批标志：本帧最后一批。
+const LAST_BATCH: u8 = 0x01;
+/// 应答状态的最高位：本帧已画完（计数是最终值）。
+const ST_COMPLETE: u8 = 0x80;
 /// 上报帧率的上限，与上位机一致。
 const MAX_FPS: u8 = 30;
 /// 超过这么久没收到整帧就丢掉帧率样本，免得安静期把间隔算进下一帧。
 const IDLE_MS: u64 = 2000;
-/// 每收多少 tile 打一条日志（全屏 300 块，约等于两帧一次）。
-const LOG_EVERY: u32 = 600;
+/// 每收多少 tile 打一条日志。
+const LOG_EVERY: u32 = 2000;
 
-/// 接收缓冲，4 KB 放静态区，别压在任务栈上。
-static MSG: StaticCell<[u8; MSG_MAX]> = StaticCell::new();
+
+/// 槽池：每条消息一块。队列深度就是「最多缓几块」——满了收帧任务自然等，形成背压。
+pub const POOL_BLOCKS: usize = 6;
+static POOL: StaticCell<[u8; MSG_MAX * POOL_BLOCKS]> = StaticCell::new();
+/// 空闲槽表。
+static FREE: Channel<CriticalSectionRawMutex, &'static mut [u8], POOL_BLOCKS> = Channel::new();
+/// 待渲染队列：收到块就投进来，立刻回 ACK，不等画屏。
+static QUEUE: Channel<CriticalSectionRawMutex, Block, POOL_BLOCKS> = Channel::new();
+/// 渲染进度快照，收发任务回 ACK 时读它。
+static SNAP: Mutex<CriticalSectionRawMutex, Snap> = Mutex::new(Snap::new());
 
 /// 从链路搬字节的小缓冲：SYNC 扫描逐字节，载荷整块拷。
 struct Reader {
@@ -89,9 +118,9 @@ impl Reader {
         }
     }
 
-    fn byte<T: Read>(&mut self, link: &mut T) -> Result<u8, T::Error> {
+    async fn byte<T: Read>(&mut self, link: &mut T) -> Result<u8, T::Error> {
         if self.pos == self.len {
-            self.len = link.read(&mut self.buf)?;
+            self.len = link.read(&mut self.buf).await?;
             self.pos = 0;
         }
         let byte = self.buf[self.pos];
@@ -100,7 +129,7 @@ impl Reader {
     }
 
     /// 拷满 `dst`：先吃缓冲里剩下的，不够再直接从链路读到目标缓冲。
-    fn read_into<T: Read>(&mut self, link: &mut T, dst: &mut [u8]) -> Result<(), T::Error> {
+    async fn read_into<T: Read>(&mut self, link: &mut T, dst: &mut [u8]) -> Result<(), T::Error> {
         let rest = self.len - self.pos;
         let n = rest.min(dst.len());
         dst[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
@@ -108,34 +137,34 @@ impl Reader {
 
         let mut filled = n;
         while filled < dst.len() {
-            filled += link.read(&mut dst[filled..])?;
+            filled += link.read(&mut dst[filled..]).await?;
         }
         Ok(())
     }
 }
 
-/// 扫到同步字后读一条完整消息，返回消息长度（`cmd` 到 `sum8`）；`0` 表示长度非法、已丢弃。
-fn read_message<T: Read>(
+/// 扫同步字后读一条完整消息，返回消息长度（`cmd` 到 `sum8`）；`0` 表示长度非法、已丢弃。
+async fn read_message<T: Read>(
     reader: &mut Reader,
     link: &mut T,
     msg: &mut [u8],
 ) -> Result<usize, T::Error> {
     let mut prev = 0u8;
     loop {
-        let byte = reader.byte(link)?;
+        let byte = reader.byte(link).await?;
         if prev == SYNC[0] && byte == SYNC[1] {
             break;
         }
         prev = byte;
     }
 
-    reader.read_into(link, &mut msg[..3])?;
+    reader.read_into(link, &mut msg[..3]).await?;
     let len = usize::from(u16::from_le_bytes([msg[1], msg[2]]));
     if 3 + len + 1 > msg.len() {
         return Ok(0);
     }
 
-    reader.read_into(link, &mut msg[3..3 + len + 1])?;
+    reader.read_into(link, &mut msg[3..3 + len + 1]).await?;
     Ok(3 + len + 1)
 }
 
@@ -147,21 +176,31 @@ fn checksum_ok(msg: &[u8]) -> bool {
     sum == msg[msg.len() - 1]
 }
 
-/// 按顺序走一遍 tile 头，校验偏移与长度都落在载荷内；返回每块的数据区间。
+/// 一块数据的哈希（FNV-1a）：上位机按同样的算法核对板子收到的是不是同一份字节。
+fn tile_hash(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for byte in bytes {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// 一批里每块 tile 的 `(头偏移, 数据偏移, 数据长度)`；布局不合法返回 `None`。
 fn tile_spans(
-    payload: &[u8],
+    tiles: &[u8],
     count: usize,
 ) -> Option<impl Iterator<Item = (usize, usize, usize)> + '_> {
     let mut spans = [0usize; MAX_TILES * 3];
-    let mut at = 1;
+    let mut at = 0;
     for index in 0..count {
         let head = at;
-        if head + TILE_HEAD > payload.len() {
+        if head + TILE_HEAD > tiles.len() {
             return None;
         }
-        let len = usize::from(u16::from_le_bytes([payload[head + 3], payload[head + 4]]));
+        let len = usize::from(u16::from_le_bytes([tiles[head + 3], tiles[head + 4]]));
         let body = head + TILE_HEAD;
-        if body + len > payload.len() {
+        if body + len > tiles.len() {
             return None;
         }
         spans[index * 3] = head;
@@ -169,7 +208,7 @@ fn tile_spans(
         spans[index * 3 + 2] = len;
         at = body + len;
     }
-    (at == payload.len()).then(|| {
+    (at == tiles.len()).then(|| {
         (0..count).map(move |index| {
             let head = spans[index * 3];
             (head, spans[index * 3 + 1], spans[index * 3 + 2])
@@ -177,17 +216,53 @@ fn tile_spans(
     })
 }
 
-/// 把一条数据命令里的 tile 逐块写到屏上。
-fn draw_tiles(display: &mut Display, payload: &[u8], count: usize) {
-    let Some(spans) = tile_spans(payload, count) else {
+/// 解一块游程编码的 tile。
+fn decode_rle(data: &[u8], pixels: &mut [u16; TILE * TILE]) -> bool {
+    let mut at = 0;
+    let mut index = 0;
+    while at < data.len() {
+        let tag = data[at];
+        at += 1;
+        let count = usize::from(tag & 0x7F) + 1;
+        if index + count > pixels.len() {
+            return false;
+        }
+        if tag & 0x80 != 0 {
+            if at + 2 > data.len() {
+                return false;
+            }
+            let pixel = u16::from_le_bytes([data[at], data[at + 1]]);
+            at += 2;
+            for dst in &mut pixels[index..index + count] {
+                *dst = pixel;
+            }
+        } else {
+            if at + count * 2 > data.len() {
+                return false;
+            }
+            for dst in &mut pixels[index..index + count] {
+                *dst = u16::from_le_bytes([data[at], data[at + 1]]);
+                at += 2;
+            }
+        }
+        index += count;
+    }
+    index == pixels.len()
+}
+
+/// 画一批 tile，返回 `(画好的块数, 这批字节的哈希之和)`。
+async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, u32) {
+    let Some(spans) = tile_spans(tiles, count) else {
         warn!("bad tile layout in batch of {}", count);
-        return;
+        return (0, 0);
     };
 
     let mut pixels = [0u16; TILE * TILE];
+    let mut drawn = 0u16;
+    let mut hash = 0u32;
     for (head, body, len) in spans {
-        let data = &payload[body..body + len];
-        match payload[head + 2] {
+        let data = &tiles[body..body + len];
+        match tiles[head + 2] {
             KIND_RLE => {
                 if !decode_rle(data, &mut pixels) {
                     warn!("bad rle tile, skipped");
@@ -205,67 +280,19 @@ fn draw_tiles(display: &mut Display, payload: &[u8], count: usize) {
             }
         }
 
-        let col = payload[head] as u16;
-        let row = payload[head + 1] as u16;
+        let col = tiles[head] as u16;
+        let row = tiles[head + 1] as u16;
         let x0 = col * TILE as u16;
         let y0 = row * TILE as u16;
         display
             .draw_raw_slice(x0, y0, x0 + TILE as u16 - 1, y0 + TILE as u16 - 1, &pixels)
             .expect("tile draw failed");
+        hash = hash.wrapping_add(tile_hash(&tiles[head..body + len]));
+        drawn += 1;
+        // 让出 CPU：另一条链路的任务要在这段时间里把 UART FIFO 排空，否则 128 字节一溢出就丢数据
+        yield_now().await;
     }
-}
-
-/// 解游程编码到 256 个像素；长度对不上返回 `false`。
-fn decode_rle(data: &[u8], pixels: &mut [u16; TILE * TILE]) -> bool {
-    let mut at = 0;
-    let mut index = 0;
-    while at < data.len() {
-        let tag = data[at];
-        at += 1;
-        let count = usize::from(tag & 0x7F) + 1;
-        if index + count > pixels.len() {
-            return false;
-        }
-        if tag & 0x80 != 0 {
-            if at + 2 > data.len() {
-                return false;
-            }
-            let pixel = u16::from_le_bytes([data[at], data[at + 1]]);
-            at += 2;
-            pixels[index..index + count].fill(pixel);
-        } else {
-            if at + count * 2 > data.len() {
-                return false;
-            }
-            for slot in &mut pixels[index..index + count] {
-                *slot = u16::from_le_bytes([data[at], data[at + 1]]);
-                at += 2;
-            }
-        }
-        index += count;
-    }
-    index == pixels.len()
-}
-
-/// 回一帧应答：`status + fps`。
-fn reply<T: Write>(link: &mut T, status: u8, fps: u8, busy_ms: u16)
-where
-    T::Error: Format,
-{
-    let mut frame = [0u8; 10];
-    frame[0..2].copy_from_slice(&SYNC);
-    frame[2] = RSP_REPORT;
-    frame[3..5].copy_from_slice(&REPORT_LEN.to_le_bytes());
-    frame[5] = status;
-    frame[6] = fps;
-    frame[7..9].copy_from_slice(&busy_ms.to_le_bytes());
-    frame[9] = frame[2..9]
-        .iter()
-        .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
-
-    if let Err(error) = link.write_all(&frame) {
-        warn!("reply write failed: {:?}", error);
-    }
+    (drawn, hash)
 }
 
 /// 板子侧测到的帧率，用「每秒千分之一帧」的定点数平滑。
@@ -311,85 +338,254 @@ impl Rate {
     }
 }
 
-/// 收帧主循环：永不返回，靠上位机停流。
-///
-/// 只接受一条链路（`main` 里给的 USB CDC），这里只要求实现阻塞的 `embedded_io::{Read, Write}`。
-pub fn run<T>(link: &mut T, display: &mut Display) -> !
+/// 板子侧的帧进度：当前帧号、本帧已经画了多少、数据哈希。
+struct Progress {
+    /// 当前帧号，0 表示还没开始。
+    frame: u16,
+    /// 本帧已应用的块数。
+    tiles: u16,
+    /// 本帧已应用数据的逐块哈希之和。
+    hash: u32,
+    /// 本帧第一批的时刻。
+    start: Option<Instant>,
+    /// 本帧从第一批到画完最后一批的毫秒数，上位机据此估板子能力。
+    busy_ms: u16,
+    /// 帧率采样。
+    rate: Rate,
+    /// 累计块数，只为打日志。
+    total: u32,
+}
+
+impl Progress {
+    const fn new() -> Self {
+        Self {
+            frame: 0,
+            tiles: 0,
+            hash: 0,
+            start: None,
+            busy_ms: 0,
+            rate: Rate::new(),
+            total: 0,
+        }
+    }
+}
+
+
+/// 队列里一个待渲染的块：整条消息的槽 + 长度（`total == 0` 表示清屏）。
+pub struct Block {
+    buf: &'static mut [u8],
+    total: usize,
+}
+
+/// 渲染进度快照：ACK 用它，可能落后一帧，只用于统计与上位机自校验。
+#[derive(Clone, Copy)]
+pub struct Snap {
+    /// 本帧的 LAST 批已经画完，计数是最终值
+    complete: bool,
+    frame: u16,
+    tiles: u16,
+    hash: u32,
+    busy_ms: u16,
+    fps: u8,
+}
+
+impl Snap {
+    const fn new() -> Self {
+        Self {
+            complete: false,
+            frame: 0,
+            tiles: 0,
+            hash: 0,
+            busy_ms: 0,
+            fps: 0,
+        }
+    }
+
+    /// 组一帧应答：`status | fps | busy(2) | frame(2) | tiles(2) | hash(4)`。
+    fn report(&self, status: u8) -> [u8; REPLY_MAX] {
+        let mut reply = [0u8; REPLY_MAX];
+        reply[0..2].copy_from_slice(&SYNC);
+        reply[2] = RSP_REPORT;
+        reply[3..5].copy_from_slice(&REPORT_LEN.to_le_bytes());
+        // 最高位告诉上位机：这一帧已经画完，tiles/hash 才是最终值
+        reply[5] = status | if self.complete { ST_COMPLETE } else { 0 };
+        reply[6] = self.fps;
+        reply[7..9].copy_from_slice(&self.busy_ms.to_le_bytes());
+        reply[9..11].copy_from_slice(&self.frame.to_le_bytes());
+        reply[11..13].copy_from_slice(&self.tiles.to_le_bytes());
+        reply[13..17].copy_from_slice(&self.hash.to_le_bytes());
+        reply[17] = reply[2..17]
+            .iter()
+            .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        reply
+    }
+}
+
+/// 把槽池铺进空闲表；`main` 在起任务前调用一次。
+pub fn init_pool() {
+    for chunk in POOL.init([0; MSG_MAX * POOL_BLOCKS]).chunks_mut(MSG_MAX) {
+        let _ = FREE.try_send(chunk);
+    }
+}
+
+/// 画一批属于当前帧的数据，顺带更新进度。
+async fn apply(
+    display: &mut Display,
+    progress: &mut Progress,
+    tiles: &[u8],
+    count: usize,
+    last: bool,
+) {
+    if progress.start.is_none() {
+        progress.start = Some(Instant::now());
+    }
+    let (drawn, hash) = draw_tiles(display, tiles, count).await;
+    progress.tiles = progress.tiles.saturating_add(drawn);
+    progress.hash = progress.hash.wrapping_add(hash);
+    progress.total += u32::from(drawn);
+
+    if last {
+        if let Some(start) = progress.start.take() {
+            // 至少算 1 ms：单批 1 块的帧真实耗时不足 1 ms，报 0 会让上位机以为是「没数据」
+            progress.busy_ms = start.elapsed().as_millis().clamp(1, u64::from(u16::MAX)) as u16;
+        }
+        progress.rate.mark();
+    }
+    if progress.total >= LOG_EVERY {
+        info!(
+            "tiles {}, fps {}, frame {}",
+            progress.total,
+            progress.rate.fps(),
+            progress.frame
+        );
+        progress.total = 0;
+    }
+}
+
+/// 把一个块画到屏上：过期（`frame < 当前`）直接丢，新帧清计数，LAST 收尾。
+async fn handle(display: &mut Display, progress: &mut Progress, msg: &[u8]) {
+    if msg.len() < 3 + BATCH_HEAD + 1 || !checksum_ok(msg) {
+        return;
+    }
+    let payload = &msg[3..msg.len() - 1];
+    let frame = u16::from_le_bytes([payload[0], payload[1]]);
+    let last = payload[2] & LAST_BATCH != 0;
+    let count = usize::from(payload[3]);
+    let tiles = &payload[BATCH_HEAD..];
+    if !(1..=MAX_TILES).contains(&count) || tile_spans(tiles, count).is_none() {
+        return;
+    }
+    if progress.frame == 0 {
+        progress.frame = frame;
+    }
+    if frame < progress.frame {
+        return;
+    }
+    if frame > progress.frame {
+        progress.frame = frame;
+        progress.tiles = 0;
+        progress.hash = 0;
+    }
+    apply(display, progress, tiles, count, last).await;
+}
+
+/// 渲染任务：单一所有者从队列取块画屏，画完把槽还回空闲表。
+pub async fn render(display: Display) -> ! {
+    let mut display = display;
+    let mut progress = Progress::new();
+    loop {
+        let block = QUEUE.receive().await;
+        if block.total == 0 {
+            display
+                .clear(embedded_graphics::pixelcolor::Rgb565::BLACK)
+                .ok();
+        } else {
+            handle(&mut display, &mut progress, &block.buf[..block.total]).await;
+        }
+        {
+            let mut snap = SNAP.lock().await;
+            *snap = Snap {
+                complete: progress.start.is_none() && progress.frame != 0,
+                frame: progress.frame,
+                tiles: progress.tiles,
+                hash: progress.hash,
+                busy_ms: progress.busy_ms,
+                fps: progress.rate.fps(),
+            };
+        }
+        let _ = FREE.send(block.buf).await;
+    }
+}
+
+/// 把应答写回链路。
+async fn reply<T: Write>(link: &mut T, report: &[u8])
+where
+    T::Error: Format,
+{
+    if let Err(error) = link.write_all(report).await {
+        warn!("reply write failed: {:?}", error);
+    }
+}
+
+/// 一条链路的收帧循环：读到块就入队并立刻回 ACK，不等画屏。
+pub async fn serve<T>(link: &mut T) -> !
 where
     T: Read + Write,
     T::Error: Format,
 {
-    let msg = MSG.init([0; MSG_MAX]);
-    // 缓冲跨消息复用：一次读很可能越过本条消息的结尾，吞进来的下一条消息开头不能丢，
-    // 否则整批 tile 被跳过 —— 屏上就是缺块、错块。
     let mut reader = Reader::new();
-    let mut rate = Rate::new();
-    let mut tiles = 0u32;
-    let mut frame_start: Option<Instant> = None;
-    let mut busy_ms: u16 = 0;
-
     loop {
-        let total = match read_message(&mut reader, link, msg) {
+        let mut buf = FREE.receive().await;
+        let total = match read_message(&mut reader, link, &mut buf).await {
             Ok(0) => {
                 warn!("bad length, message dropped");
+                let _ = FREE.send(buf).await;
                 continue;
             }
             Ok(total) => total,
             Err(error) => {
                 warn!("read failed: {:?}", error);
+                let _ = FREE.send(buf).await;
                 continue;
             }
         };
 
-        if !checksum_ok(&msg[..total]) {
-            warn!("bad checksum, message dropped");
-            reply(link, ST_NAK, rate.fps(), busy_ms);
+        let cmd = buf[0];
+        if cmd == CMD_TILES {
+            if !checksum_ok(&buf[..total]) || total < 3 + BATCH_HEAD + 1 {
+                warn!("bad tile message, dropped");
+                let snap = *SNAP.lock().await;
+                reply(link, &snap.report(ST_NAK)).await;
+                let _ = FREE.send(buf).await;
+                continue;
+            }
+            // 入队就回 ACK：链路可以立刻继续收下一块，不用等画屏
+            let _ = QUEUE.send(Block { buf, total }).await;
+            let snap = *SNAP.lock().await;
+            reply(link, &snap.report(ST_ACK)).await;
             continue;
         }
 
-        let payload = &msg[3..total - 1];
-        match msg[0] {
-            CMD_TILES => {
-                let count = usize::from(payload[0] & !LAST_BATCH);
-                if !(1..=MAX_TILES).contains(&count) || tile_spans(payload, count).is_none() {
-                    warn!("bad tile batch: count {}", count);
-                    reply(link, ST_NAK, rate.fps(), busy_ms);
-                    continue;
-                }
-
-                if frame_start.is_none() {
-                    frame_start = Some(Instant::now());
-                }
-
-                draw_tiles(display, payload, count);
-                tiles += count as u32;
-
-                // 本帧从第一批到画完最后一批占了多少毫秒，上位机据此算板子的能力上限
-                if payload[0] & LAST_BATCH != 0 {
-                    if let Some(start) = frame_start.take() {
-                        // 至少算 1 ms：单批 1 块的帧真实耗时不足 1 ms，报 0 会让上位机以为是「没数据」
-                        busy_ms = start.elapsed().as_millis().clamp(1, u64::from(u16::MAX)) as u16;
-                    }
-                    rate.mark();
-                }
-                if tiles >= LOG_EVERY {
-                    info!("tiles received: {}, fps {}", tiles, rate.fps());
-                    tiles = 0;
-                }
-
-                reply(link, ST_ACK, rate.fps(), busy_ms);
-            }
-            CMD_PING => reply(link, ST_PONG, rate.fps(), busy_ms),
+        let status = match cmd {
+            CMD_PING => ST_PONG,
             CMD_CLEAR => {
-                display
-                    .clear(embedded_graphics::pixelcolor::Rgb565::BLACK)
-                    .ok();
-                reply(link, ST_ACK, rate.fps(), busy_ms);
+                // 清屏交给渲染任务，避免两个任务同时动屏
+                let _ = QUEUE.send(Block { buf, total: 0 }).await;
+                let snap = *SNAP.lock().await;
+                reply(link, &snap.report(ST_ACK)).await;
+                continue;
+            }
+            CMD_RESET => {
+                *SNAP.lock().await = Snap::new();
+                ST_ACK
             }
             other => {
                 warn!("unknown command {}, dropped", other);
-                reply(link, ST_NAK, rate.fps(), busy_ms);
+                ST_NAK
             }
-        }
+        };
+        let snap = *SNAP.lock().await;
+        reply(link, &snap.report(status)).await;
+        let _ = FREE.send(buf).await;
     }
 }

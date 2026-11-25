@@ -33,8 +33,10 @@ const ADJUST: Duration = Duration::from_millis(250);
 const PING: Duration = Duration::from_millis(500);
 /// 状态行刷新间隔。
 const REPORT: Duration = Duration::from_secs(1);
+/// 帧校验前等板子画完本帧的最长时间；300 块整帧约 60–80 ms，200 ms 留倍数余量。
+const VERIFY_TIMEOUT: Duration = Duration::from_millis(200);
 /// 一批最多几个 tile，与固件一致。
-const BATCH: usize = 64;
+const BATCH: usize = 32;
 
 /// 副屏上位机：抓 Wayland 输出的一角，按 16×16 分块 diff，走串口推给 ESP32-C6。
 #[derive(Parser)]
@@ -178,6 +180,8 @@ struct Stats {
     loop_us: u64,
     /// 库报告的抓屏耗时（微秒）。
     capture_us: u64,
+    /// 板子回报的本帧哈希/块数与上位机对不上的次数。
+    mismatch: u64,
     /// 出错后两个线程都停。
     error: Option<String>,
 }
@@ -212,6 +216,8 @@ fn run(args: Args) -> Result<(), String> {
             .clone(),
     };
 
+    // 指定了口就只用指定的那些（按顺序试），一个都不应答就报错——不偷偷换到别的口。
+    // 只有完全没指定时才自动探测。
     let candidates = if args.serial.is_empty() {
         usb_ports()
     } else {
@@ -221,7 +227,6 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no usb serial port found".into());
     }
 
-    // 板子两条链路（USB CDC 与 UART0）同时开着，插哪个口都行：谁先应答就用谁
     let (port, mut link) = connect(&candidates, args.baud)?;
 
     println!(
@@ -229,8 +234,9 @@ fn run(args: Args) -> Result<(), String> {
         args.baud, args.fps
     );
 
-    // 控制命令：先把屏清成黑的，免得上一轮残留的像素留到第一帧
+    // 控制命令：先把屏清成黑的、再把板子内部状态（帧号、缓存、帧率采样）归零
     link.clear()?;
+    link.reset()?;
 
     let target = args.fps.clamp(MIN_FPS, MAX_FPS);
     let shared = Arc::new(Shared {
@@ -246,7 +252,7 @@ fn run(args: Args) -> Result<(), String> {
     let sender = {
         let shared = Arc::clone(&shared);
         let cancel = Arc::clone(&cancel);
-        thread::spawn(move || send_loop(link, shared, cancel))
+        thread::spawn(move || send_loop(link, shared, cancel, port.clone()))
     };
 
     // 抓屏上限固定给 30 fps，实际节奏由 target 控制
@@ -326,12 +332,14 @@ fn run(args: Args) -> Result<(), String> {
 }
 
 /// 发送线程：槽位里有帧就整帧发完，没有就隔一会儿用控制命令问一次板子状态。
-fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>) {
+fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>, port: String) {
     let started = Instant::now();
     let mut report = Instant::now();
     let mut last_ping = Instant::now();
     let mut last_adjust = Instant::now();
     let mut busy_avg = 0.0f64;
+    // 帧号从 1 开始，板子用 0 表示「还没开始」
+    let mut frame_no = 0u16;
 
     while !cancel.load(Ordering::Relaxed) {
         let job = { shared.slot.lock().expect("slot poisoned").take() };
@@ -351,13 +359,43 @@ fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>) {
         let send_start = Instant::now();
         let mut encoded_bytes = 0u64;
         let chunks = tiles.len().div_ceil(BATCH);
+        frame_no = frame_no.wrapping_add(1);
+        let mut expect_hash = 0u32;
+        let mut expect_tiles = 0u16;
+        let mut last_reply = None;
         for (index, chunk) in tiles.chunks(BATCH).enumerate() {
-            match link.send_tiles(chunk, index + 1 == chunks) {
-                Ok((reply, encoded)) => {
+            let last = index + 1 == chunks;
+            match link.send_tiles(frame_no, (index + 1) as u8, chunks as u8, chunk, last) {
+                Ok((reply, encoded, hash)) => {
                     busy_avg = observe(&shared, reply, busy_avg);
                     encoded_bytes += encoded as u64;
+                    expect_hash = expect_hash.wrapping_add(hash);
+                    expect_tiles = expect_tiles.wrapping_add(chunk.len() as u16);
+                    last_reply = Some(reply);
                 }
                 Err(error) => return shared.fail(&cancel, error),
+            }
+        }
+
+        // 哈希自校验：ACK 在入队时回，渲染异步追赶，快照可能停在上一帧；
+        // ping 到本帧 complete（或超时）再比对，避免把「还没画完」误报成丢数据
+        if let Some(reply) = last_reply {
+            let mut reply = reply;
+            let deadline = Instant::now() + VERIFY_TIMEOUT;
+            while !(reply.complete && reply.frame == frame_no) && Instant::now() < deadline {
+                match link.ping() {
+                    Ok(next) => reply = next,
+                    Err(error) => return shared.fail(&cancel, error),
+                }
+            }
+            if reply.frame != frame_no || reply.tiles != expect_tiles || reply.hash != expect_hash {
+                eprintln!(
+                    "frame {frame_no} mismatch: board frame {} tiles {} hash {:08x}, expected tiles {expect_tiles} hash {expect_hash:08x}",
+                    reply.frame, reply.tiles, reply.hash
+                );
+                if let Ok(mut stats) = shared.stats.lock() {
+                    stats.mismatch += 1;
+                }
             }
         }
 
@@ -376,7 +414,7 @@ fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>) {
         }
 
         if report.elapsed() >= REPORT {
-            print_stats(&shared, started.elapsed());
+            print_stats(&shared, started.elapsed(), &port);
             report = Instant::now();
         }
     }
@@ -413,11 +451,12 @@ fn adjust(shared: &Shared, busy_avg: f64) {
     }
 }
 
-fn print_stats(shared: &Shared, elapsed: Duration) {
+fn print_stats(shared: &Shared, elapsed: Duration, port: &str) {
     let stats = shared.stats.lock().expect("stats poisoned");
     let seconds = elapsed.as_secs_f64().max(0.001);
     println!(
-        "{} captured ({:.1} fps), {} sent ({:.1} fps), target {:.0}, board {} fps (busy {} ms), {} dirty, {} tiles ({:.0} KB/s, {:.0}% of raw), send {} us (max {}), loop {} us, capture {} us",
+        "[{}] {} captured ({:.1} fps), {} sent ({:.1} fps), target {:.0}, board {} fps (busy {} ms), {} dirty, {} tiles ({:.0} KB/s, {:.0}% of raw), send {} us (max {}), loop {} us, capture {} us, {} mismatch",
+        port,
         stats.captured,
         stats.captured as f64 / seconds,
         stats.sent,
@@ -433,5 +472,6 @@ fn print_stats(shared: &Shared, elapsed: Duration) {
         stats.send_max_us,
         stats.loop_us,
         stats.capture_us,
+        stats.mismatch,
     );
 }

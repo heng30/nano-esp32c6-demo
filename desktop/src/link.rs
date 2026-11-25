@@ -4,7 +4,10 @@
 //! C6 D5 | cmd(1) | len(2, LE) | payload(len) | sum8(1)
 //! ```
 //!
-//! 数据命令 `0x01` 传图像，控制命令 `0x02` / `0x03` 查询与清屏，板子只回 `0x81`（`status + fps`）。
+//! 数据命令 `0x01` 传图像（载荷带帧号，板子靠它丢过期数据），控制命令 `0x02` 查询、
+//! `0x03` 清屏、`0x04` 重置板子内部状态；板子只回 `0x81`：
+//! `status + fps + busy_ms + frame + tiles + hash`，最后两个是板子本帧的进度与数据哈希，
+//! 上位机按帧核对，不需要看屏幕就知道板子收全了没有。
 
 use std::{
     io::{Read, Write},
@@ -16,7 +19,9 @@ use serialport::SerialPort;
 use crate::frame::{TILE, Tile};
 
 /// 一批最多几个 tile，必须与固件一致。
-const MAX_TILES: usize = 64;
+const MAX_TILES: usize = 32;
+/// 数据载荷头：帧号、标志、本批块数、批序号、批总数。
+const BATCH_HEAD: usize = 6;
 /// 消息头的同步字。
 const SYNC: [u8; 2] = [0xC6, 0xD5];
 
@@ -26,6 +31,8 @@ const CMD_TILES: u8 = 0x01;
 const CMD_PING: u8 = 0x02;
 /// 控制命令：清屏。
 const CMD_CLEAR: u8 = 0x03;
+/// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样）。
+const CMD_RESET: u8 = 0x04;
 
 /// 板子的控制应答。
 const RSP_REPORT: u8 = 0x81;
@@ -34,15 +41,25 @@ const ST_ACK: u8 = 0;
 /// 应答状态：对查询的回应。
 const ST_PONG: u8 = 2;
 
-/// `CMD_TILES` 载荷首字节的最高位：本帧最后一批。
-const LAST_BATCH: u8 = 0x80;
+/// 批标志：本帧最后一批。
+const LAST_BATCH: u8 = 0x01;
 
 /// 等应答的超时。板子画 8 块约 3 ms，1 秒只是给串口排队留的余量。
-const TIMEOUT: Duration = Duration::from_millis(1000);
+const TIMEOUT: Duration = Duration::from_millis(400);
 /// 一条消息最多重发几次。
-const RETRY: usize = 3;
-/// 应答载荷的最大长度（`status + fps`）。
-const REPLY_MAX: usize = 8;
+const RETRY: usize = 2;
+/// 应答载荷长度（`status + fps + busy + frame + tiles + hash`），必须与固件一致。
+const REPLY_MAX: usize = 12;
+/// 一块数据的哈希（FNV-1a），与固件同一算法，用来核对板子收到的字节。
+fn tile_hash(bytes: &[u8]) -> u32 {
+    let mut hash = 0x811c_9dc5u32;
+    for byte in bytes {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 /// 一块 tile 的像素字节数。
 const RAW_LEN: usize = TILE * TILE * 2;
 /// 一块 tile 的编码：原样。
@@ -52,7 +69,7 @@ const KIND_RLE: u8 = 1;
 /// 一块 tile 的头：列、行、编码、载荷长度（u16）。
 const TILE_HEAD: usize = 5;
 /// 一条消息的最大字节数（不含同步字）。
-const MSG_MAX: usize = 3 + 1 + MAX_TILES * (TILE_HEAD + RAW_LEN) + 1;
+const MSG_MAX: usize = 3 + BATCH_HEAD + MAX_TILES * (TILE_HEAD + RAW_LEN) + 1;
 
 /// 板子的应答。
 #[derive(Clone, Copy)]
@@ -63,12 +80,21 @@ pub struct Report {
     pub fps: u8,
     /// 本帧从收到第一批到画完最后一批花掉的毫秒数，0 表示还没整帧。
     pub busy_ms: u16,
+    /// 板子当前的帧号。
+    pub frame: u16,
+    /// 板子本帧已应用的块数。
+    pub tiles: u16,
+    /// 板子本帧已应用数据的逐块哈希之和。
+    pub hash: u32,
+    /// 板子本帧已经画完（计数是最终值）。ACK 是入队即回，没画完时校验没意义。
+    pub complete: bool,
 }
 
 impl Report {
     /// 板子已处理完这条命令。
     pub fn ok(&self) -> bool {
-        self.status == ST_ACK || self.status == ST_PONG
+        let status = self.status & 0x7F;
+        status == ST_ACK || status == ST_PONG
     }
 }
 
@@ -94,25 +120,46 @@ impl Link {
         })
     }
 
-    /// 数据命令：发一批 tile，`last` 标记本帧最后一批。返回应答与这批的载荷字节数。
-    pub fn send_tiles(&mut self, tiles: &[Tile], last: bool) -> Result<(Report, usize), String> {
+    /// 数据命令：发一批 tile。返回应答、这批载荷的字节数、这批数据的帧哈希。
+    ///
+    /// `frame` 是帧号（板子用它丢过期数据），`batch` / `total` 是本批在本帧里的序号与总批数，
+    /// `last` 标记本帧最后一批。上位机把所有批的哈希加起来，和板子回的 `hash` 核对。
+    pub fn send_tiles(
+        &mut self,
+        frame: u16,
+        batch: u8,
+        total: u8,
+        tiles: &[Tile],
+        last: bool,
+    ) -> Result<(Report, usize, u32), String> {
         self.msg.clear();
-        // 载荷首字节 = tile 数 | 最后一批标志
-        self.msg
-            .push(tiles.len() as u8 | if last { LAST_BATCH } else { 0 });
+        self.msg.extend_from_slice(&frame.to_le_bytes());
+        self.msg.push(if last { LAST_BATCH } else { 0 });
+        self.msg.push(tiles.len() as u8);
+        self.msg.push(batch);
+        self.msg.push(total);
+
+        let mut hash = 0u32;
         for tile in tiles {
+            let start = self.msg.len();
             encode_tile(tile, &mut self.msg);
+            hash = hash.wrapping_add(tile_hash(&self.msg[start..]));
         }
-        let encoded = self.msg.len() - 1;
+        let encoded = self.msg.len() - BATCH_HEAD;
         let payload = std::mem::take(&mut self.msg);
         let report = self.transact(CMD_TILES, &payload);
         self.msg = payload;
-        report.map(|report| (report, encoded))
+        report.map(|report| (report, encoded, hash))
     }
 
     /// 控制命令：查询板子当前实测帧率。
     pub fn ping(&mut self) -> Result<Report, String> {
         self.transact(CMD_PING, &[])
+    }
+
+    /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样），不动屏幕。
+    pub fn reset(&mut self) -> Result<Report, String> {
+        self.transact(CMD_RESET, &[])
     }
 
     /// 控制命令：清屏。
@@ -182,7 +229,7 @@ impl Link {
             return Err(format!("unexpected reply 0x{:02x}", body[0]));
         }
         let len = usize::from(u16::from_le_bytes([body[1], body[2]]));
-        if !(4..=REPLY_MAX).contains(&len) {
+        if len != REPLY_MAX {
             return Err(format!("bad reply length {len}"));
         }
         self.port
@@ -206,9 +253,13 @@ impl Link {
         }
 
         Ok(Report {
-            status: body[3],
+            status: body[3] & 0x7F,
             fps: body[4],
             busy_ms: u16::from_le_bytes([body[5], body[6]]),
+            frame: u16::from_le_bytes([body[7], body[8]]),
+            tiles: u16::from_le_bytes([body[9], body[10]]),
+            hash: u32::from_le_bytes([body[11], body[12], body[13], body[14]]),
+            complete: body[3] & 0x80 != 0,
         })
     }
 }
@@ -404,7 +455,10 @@ mod tests {
             Report {
                 status: ST_ACK,
                 fps: 0,
-                busy_ms: 0
+                busy_ms: 0,
+                frame: 0,
+                tiles: 0,
+                hash: 0,
             }
             .ok()
         );
@@ -412,7 +466,10 @@ mod tests {
             Report {
                 status: ST_PONG,
                 fps: 7,
-                busy_ms: 12
+                busy_ms: 12,
+                frame: 3,
+                tiles: 5,
+                hash: 0
             }
             .ok()
         );
@@ -420,7 +477,10 @@ mod tests {
             !Report {
                 status: 1,
                 fps: 0,
-                busy_ms: 0
+                busy_ms: 0,
+                frame: 0,
+                tiles: 0,
+                hash: 0
             }
             .ok()
         );

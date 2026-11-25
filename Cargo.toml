@@ -58,7 +58,6 @@ slint-build = { version = "1.19", default-features = false, features = [
 
 embedded-hal = { version = "1.0", default-features = false }
 embedded-hal-bus = { version = "0.3", default-features = false }
-embedded-io = { version = "0.7", default-features = false }
 embedded-io-async = { version = "0.7", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
 embedded-graphics-core = { version = "0.4", default-features = false }

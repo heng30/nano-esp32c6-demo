@@ -6,9 +6,9 @@
 
 - 屏与接线：与 [`../ili9341-lcd/`](../ili9341-lcd/README.md) 完全一样（18 根 GPIO 的 16 位 8080 并口），本目录只多用到串口
 - 数据链路：`esp_hal::usb::usb_serial_jtag` 的 **CDC 数据通道**，主机侧就是 `/dev/ttyACM*`（缺省 2 Mbaud 的设置对 CDC 无效）
-- 换成板载 CH343P 的 UART0（GPIO16 = U0RXD、GPIO17 = U0TXD）只需改 `src/main.rs` 里取链路的两行，
-  换成 `Uart::new(peripherals.UART0, uart::Config::default().with_baudrate(2_000_000))...into_async()`；
-  `link::run` 只要求实现 `embedded_io_async::{Read, Write}`，两种链路共用同一套解析
+- 板载 CH343P 的 UART0（GPIO16 = U0TXD、GPIO17 = U0RXD）与 USB CDC **同时**收帧
+  （`serve_usb` / `serve_uart` 两个任务），上位机连哪个口都行；走 CH343P 时 `--baud` 必须与
+  固件 `UART_BAUD`（2 Mbaud）一致，CDC 链路忽略波特率
 
 ## 协议
 
@@ -76,6 +76,13 @@ USB-Serial-JTAG 是 12 Mbps 全速设备，实测 550–600 KB/s 就是它的上
 所以瓶颈不在驱动，而在这个外设本身。再往上只能减少字节（压缩、降色彩），或者换链路。
 
 想再快就得改成主机侧流水线（不等应答连发），代价是板子要按最坏情况加大接收缓冲、并接受 USB 端点溢出丢数据。
+
+UART0（板载 CH343P）链路：2 Mbaud 线路上限约 196 KB/s，修掉 RX FIFO 溢出后实测 180–190 KB/s
+（~250 脏块一帧约 0.36 s）。溢出的坑在 esp-hal：`RxConfig` 默认 `fifo_full_threshold = 120`，
+而硬件 FIFO 只有 128 字节，2 Mbaud 下只剩 40 µs 余量；渲染一块 tile 约 200 µs 不让出，
+收发一重叠 FIFO 必满，esp-hal 直接 `rxfifo_reset()` 把在途消息整个冲掉且不回 NAK，
+上位机表现为每批吃满超时重发、吞吐掉到 ~15 KB/s。固件用 `with_fifo_full_threshold(16)`
+把余量放大到 560 µs，重构时别把这行丢了。
 
 ## 运行
 
