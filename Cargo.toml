@@ -43,7 +43,6 @@ overflow-checks = false
 static_cell = { version = "2.1", default-features = false }
 critical-section = { version = "1.2", default-features = false }
 
-clap = { version = "4.6", features = ["derive"] }
 font8x8 = { version = "0.3", default-features = false }
 serialport = { version = "4.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
@@ -52,10 +51,6 @@ ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
 
 kk-ui-rs = { version = "0.1", default-features = false, features = [
   "cjk-fonts",
-] }
-
-fast_image_resize = { version = "6.0", default-features = false, features = [
-  "std",
 ] }
 
 slint = { version = "1.19", default-features = false }
@@ -177,6 +172,38 @@ lvgl-rust = { version = "0.3", default-features = false, features = [
   "use-string-functions",
 ] }
 
-# 副屏上位机依赖（宿主机命令行，编不到 riscv32）
-screen-capture = { path = "lib/screen-capture" }
+
+clap = { version = "4.6", features = ["derive"] }
+ctrlc = { version = "3.5", default-features = false }
+memmap2 = { version = "0.9", default-features = false }
+spin_sleep = { version = "1.3", default-features = false }
+derive_setters = { version = "0.1", default-features = false }
+wayland-client = { version = "0.31", default-features = false }
+nix = { version = "0.32", default-features = false, features = ["fs"] }
+log = { version = "0.4", default-features = false, features = ["std"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+which = { version = "8.0", default-features = false, features = ["real-sys"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+
+serde = { version = "1.0", default-features = false, features = [
+  "std",
+  "derive",
+] }
+env_logger = { version = "0.11", default-features = false, features = [
+  "auto-color",
+  "humantime",
+] }
+fast_image_resize = { version = "6.0", default-features = false, features = [
+  "std",
+] }
+wayland-protocols = { version = "0.32", default-features = false, features = [
+  "client",
+  "unstable",
+] }
+wayland-protocols-wlr = { version = "0.3", default-features = false, features = [
+  "client",
+] }
+
+screen-capture = { path = "lib/screen-capture", features = ["wayland"] }
 screen-capture-wayland-wlr = { path = "lib/screen-capture-wayland-wlr" }

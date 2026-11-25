@@ -4,31 +4,20 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-log = { version = "0.4", default-features = false, features = ["std"] }
-which = { version = "8.0", default-features = false, features = ["real-sys"] }
-memmap2 = { version = "0.9", default-features = false }
-thiserror = { version = "2.0", default-features = false, features = ["std"] }
-serde_json = { version = "1.0", default-features = false, features = ["std"] }
-spin_sleep = { version = "1.3", default-features = false }
-wayland-client = { version = "0.31", default-features = false }
-nix = { version = "0.31", default-features = false, features = ["fs"] }
-serde = { version = "1.0", default-features = false, features = [
-  "std",
-  "derive",
-] }
-screen-capture = { workspace = true, features = ["wayland"] }
-wayland-protocols-wlr = { version = "0.3", default-features = false, features = [
-  "client",
-] }
-wayland-protocols = { version = "0.32", default-features = false, features = [
-  "client",
-  "unstable",
-] }
+log.workspace = true
+nix.workspace = true
+serde.workspace = true
+which.workspace = true
+memmap2.workspace = true
+thiserror.workspace = true
+serde_json.workspace = true
+spin_sleep.workspace = true
+wayland-client.workspace = true
+screen-capture.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
 
 [dev-dependencies]
-ctrlc = { version = "3.5", default-features = false }
-env_logger = { version = "0.11", default-features = false, features = [
-  "auto-color",
-  "humantime",
-] }
-image = { version = "0.25", default-features = false, features = ["png"] }
+ctrlc.workspace = true
+image.workspace = true
+env_logger.workspace = true

@@ -63,8 +63,9 @@ pub struct PhysicalSize {
     pub height: i32,
 }
 
-#[derive(Debug, Clone, Deserialize, Copy, PartialEq, PartialOrd)]
+#[derive(Debug, Default, Clone, Deserialize, Copy, PartialEq, PartialOrd)]
 pub enum Transform {
+    #[default]
     Normal,
     _90,
     _180,
@@ -73,12 +74,6 @@ pub enum Transform {
     Flipped90,
     Flipped180,
     Flipped270,
-}
-
-impl Default for Transform {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 #[cfg(all(target_os = "linux", feature = "wayland"))]

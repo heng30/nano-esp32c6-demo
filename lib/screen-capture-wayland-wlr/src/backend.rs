@@ -355,7 +355,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, usize> for State 
 
                 // Request the compositor to copy screen data into our buffer
                 let wl_buffer = state.output_infos[*index].wl_buffer.as_ref().unwrap();
-                wlr_screencopy_frame.copy(&wl_buffer);
+                wlr_screencopy_frame.copy(wl_buffer);
             }
             // Buffer has been filled with screen data
             zwlr_screencopy_frame_v1::Event::Ready {

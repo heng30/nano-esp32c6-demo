@@ -71,7 +71,7 @@ fn cmd_get() -> Result<Vec<ScreenInfo>, ScreenInfoError> {
                 },
                 physical_size: Some(screen.physical_size),
                 scale_factor: screen.scale,
-                position: screen.position.clone(),
+                position: screen.position,
 
                 transform: match screen.transform.to_lowercase().as_str() {
                     "normal" => Transform::Normal,

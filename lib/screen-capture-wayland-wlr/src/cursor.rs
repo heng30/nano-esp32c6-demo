@@ -505,17 +505,13 @@ impl Dispatch<wl_output::WlOutput, ()> for CursorTrackerState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        match event {
-            wl_output::Event::Name { name } => {
-                if let Some((_, output_name)) = state
-                    .outputs
-                    .iter_mut()
-                    .find(|(o, _)| o.id() == output.id())
-                {
-                    *output_name = name.clone();
-                }
-            }
-            _ => (),
+        if let wl_output::Event::Name { name } = event
+            && let Some((_, output_name)) = state
+                .outputs
+                .iter_mut()
+                .find(|(o, _)| o.id() == output.id())
+        {
+            *output_name = name.clone();
         }
     }
 }
@@ -530,12 +526,8 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for CursorTrackerSt
         _: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        match event {
-            zwlr_layer_surface_v1::Event::Configure { serial, .. } => {
-                handle_surface_configure(state, layer_surface, serial);
-            }
-            zwlr_layer_surface_v1::Event::Closed => (),
-            _ => (),
+        if let zwlr_layer_surface_v1::Event::Configure { serial, .. } = event {
+            handle_surface_configure(state, layer_surface, serial);
         }
     }
 }
@@ -549,16 +541,11 @@ impl Dispatch<wl_seat::WlSeat, ()> for CursorTrackerState {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        match event {
-            wl_seat::Event::Capabilities { capabilities } => {
-                if let wayland_client::WEnum::Value(caps) = capabilities {
-                    if caps.contains(wl_seat::Capability::Pointer) {
-                        let pointer = seat.get_pointer(qh, ());
-                        state.pointer = Some(pointer);
-                    }
-                }
-            }
-            _ => (),
+        if let wl_seat::Event::Capabilities { capabilities } = event
+            && let wayland_client::WEnum::Value(caps) = capabilities
+            && caps.contains(wl_seat::Capability::Pointer)
+        {
+            state.pointer = Some(seat.get_pointer(qh, ()));
         }
     }
 }

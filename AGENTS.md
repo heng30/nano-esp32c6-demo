@@ -57,10 +57,11 @@ nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1
   例程，还必须带 `esp-alloc` 全局分配器。新增成员时先看它到底要不要 `esp-radio`。
 - `version` / `edition` 由根的 `[workspace.package]` 提供，成员写 `version.workspace = true`、
   `edition.workspace = true`（`kk-ui-rs` 除外，见上）。
-- **宿主机 crate**：`secondary-screen-desktop/` 的依赖也走根 `[workspace.dependencies]`（`clap`、`fast_image_resize`、
-  `serialport` 与两条 path 依赖 `screen-capture*` 都登记在根里）；`lib/screen-capture`、
-  `lib/screen-capture-wayland-wlr` 仍写显式版本（它们的依赖没进根）。三者都只用根里的
-  `version.workspace` / `edition.workspace`，构建/测试不加 `--target`。
+- **宿主机 crate**：`secondary-screen-desktop/`、`lib/screen-capture`、`lib/screen-capture-wayland-wlr` 的依赖
+  同样登记在根 `[workspace.dependencies]`，成员只写 `xx.workspace = true`（`screen-capture` 的
+  `wayland-client` 额外带 `optional = true`）。三者只用根里的
+  `version.workspace` / `edition.workspace`，构建/测试不加 `--target`；`lib/` 两个 crate 不继承根的
+  license/readme/authors（上游移植）。
   **`clap` 是 `default-features = false` 的唯一例外**：命令行要保留默认的 std/help/usage/color，
   否则 `--help` 与参数报错都会残缺。
 - `[profile.*]` 只在根生效，成员里写会被忽略（cargo 会警告）；改编译选项去根 `Cargo.toml`。
