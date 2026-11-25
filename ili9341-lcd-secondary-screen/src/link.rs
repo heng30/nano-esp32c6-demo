@@ -34,11 +34,8 @@ use crate::display::Display;
 
 /// 一个 tile 的边长（像素）。
 const TILE: usize = 16;
-/// 一批最多几个 tile。越大，每条消息的固定开销（同步、校验、等应答）摊得越薄，
-/// 代价是接收缓冲和「下一帧」缓存占的静态内存。
+/// 一条消息最多几块 tile：上位机按帧自适应（小帧 1 块、大帧最多 32 块）。
 const MAX_TILES: usize = 32;
-/// 最多缓存几批「下一帧」的数据；满了就不再等上一帧的迟到批次，直接推进。
-const PENDING: usize = 5;
 /// 一块 tile 的像素字节数。
 const RAW_LEN: usize = TILE * TILE * 2;
 /// 一块 tile 的编码：原样。
@@ -53,8 +50,6 @@ const BATCH_HEAD: usize = 6;
 const PAYLOAD_MAX: usize = BATCH_HEAD + MAX_TILES * (TILE_HEAD + RAW_LEN);
 /// 一条消息的最大字节数（不含同步字）：`cmd + len + payload + sum`。
 const MSG_MAX: usize = 3 + PAYLOAD_MAX + 1;
-/// 接收缓冲长度（对外的别名）。
-pub const MSG_BUF: usize = MSG_MAX;
 /// 消息头的同步字。
 const SYNC: [u8; 2] = [0xC6, 0xD5];
 
@@ -92,12 +87,15 @@ const IDLE_MS: u64 = 2000;
 const LOG_EVERY: u32 = 2000;
 
 
-/// 槽池：每条消息一块。队列深度就是「最多缓几块」——满了收帧任务自然等，形成背压。
-pub const POOL_BLOCKS: usize = 6;
+/// 槽池：每条消息一块（最大约 4 KB）；13 块刚好装得下一整帧（300 块 / 32 块一条 = 10 条）
+/// 加上两条链路各在手的一块与渲染在手的一块。
+/// 收帧任务补不到块就不读下一条：链路背压全靠这一点（USB 有流控字节顶在缓冲里，
+/// UART 没有会溢出丢掉，流式数据可接受）。
+pub const POOL_BLOCKS: usize = 13;
 static POOL: StaticCell<[u8; MSG_MAX * POOL_BLOCKS]> = StaticCell::new();
 /// 空闲槽表。
 static FREE: Channel<CriticalSectionRawMutex, &'static mut [u8], POOL_BLOCKS> = Channel::new();
-/// 待渲染队列：收到块就投进来，立刻回 ACK，不等画屏。
+/// 待渲染队列：收到块就投进来，ACK 等渲染腾出下一块槽再回。
 static QUEUE: Channel<CriticalSectionRawMutex, Block, POOL_BLOCKS> = Channel::new();
 /// 渲染进度快照，收发任务回 ACK 时读它。
 static SNAP: Mutex<CriticalSectionRawMutex, Snap> = Mutex::new(Snap::new());
@@ -289,7 +287,8 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
             .expect("tile draw failed");
         hash = hash.wrapping_add(tile_hash(&tiles[head..body + len]));
         drawn += 1;
-        // 让出 CPU：另一条链路的任务要在这段时间里把 UART FIFO 排空，否则 128 字节一溢出就丢数据
+        // 每块都让出 CPU：UART 的 128 字节 FIFO 在 2 Mbaud 下只有 640 µs 余量，
+        // 画一块的时长已经超过它，攒几块再让就会 Rx(FifoOverflowed) 丢整条消息
         yield_now().await;
     }
     (drawn, hash)
@@ -350,6 +349,8 @@ struct Progress {
     start: Option<Instant>,
     /// 本帧从第一批到画完最后一批的毫秒数，上位机据此估板子能力。
     busy_ms: u16,
+    /// 本帧已画完（LAST 已画）。
+    done: bool,
     /// 帧率采样。
     rate: Rate,
     /// 累计块数，只为打日志。
@@ -364,6 +365,7 @@ impl Progress {
             hash: 0,
             start: None,
             busy_ms: 0,
+            done: false,
             rate: Rate::new(),
             total: 0,
         }
@@ -445,6 +447,7 @@ async fn apply(
     progress.total += u32::from(drawn);
 
     if last {
+        progress.done = true;
         if let Some(start) = progress.start.take() {
             // 至少算 1 ms：单批 1 块的帧真实耗时不足 1 ms，报 0 会让上位机以为是「没数据」
             progress.busy_ms = start.elapsed().as_millis().clamp(1, u64::from(u16::MAX)) as u16;
@@ -462,34 +465,32 @@ async fn apply(
     }
 }
 
-/// 把一个块画到屏上：过期（`frame < 当前`）直接丢，新帧清计数，LAST 收尾。
-async fn handle(display: &mut Display, progress: &mut Progress, msg: &[u8]) {
-    if msg.len() < 3 + BATCH_HEAD + 1 || !checksum_ok(msg) {
-        return;
+/// 校验并画一个块，返回它是否是本帧的 LAST 块。
+/// 块在进队列（或进「下一帧」缓存）前已由收帧任务校验过字节和与布局，这里不再重算
+/// —— 1 块粒度下每块重算一遍会把每块渲染开销抬高一截。
+async fn apply_block(display: &mut Display, progress: &mut Progress, block: &Block) -> bool {
+    let msg = &block.buf[..block.total];
+    if msg.len() < 3 + BATCH_HEAD + 1 {
+        return false;
     }
     let payload = &msg[3..msg.len() - 1];
-    let frame = u16::from_le_bytes([payload[0], payload[1]]);
     let last = payload[2] & LAST_BATCH != 0;
     let count = usize::from(payload[3]);
     let tiles = &payload[BATCH_HEAD..];
-    if !(1..=MAX_TILES).contains(&count) || tile_spans(tiles, count).is_none() {
-        return;
-    }
-    if progress.frame == 0 {
-        progress.frame = frame;
-    }
-    if frame < progress.frame {
-        return;
-    }
-    if frame > progress.frame {
-        progress.frame = frame;
-        progress.tiles = 0;
-        progress.hash = 0;
-    }
     apply(display, progress, tiles, count, last).await;
+    last
 }
 
-/// 渲染任务：单一所有者从队列取块画屏，画完把槽还回空闲表。
+/// 从块缓冲里取帧号（载荷首字段）。
+fn frame_of(block: &Block) -> u16 {
+    u16::from_le_bytes([block.buf[3], block.buf[4]])
+}
+
+/// 渲染任务：单一所有者按到达顺序画块，**不缓存也不丢**。
+///
+/// 每块 tile 按坐标幂等绘制，所以就算上一帧的块迟到也照画——那正是该 tile 的最新
+/// 内容；帧号只在变大时用来重置本帧计数与忙碌统计。不攒「下一帧」缓存，就不会
+/// 因为缓存装不下一整帧而被迫推进、把块丢掉（那正是花屏的来源）。
 pub async fn render(display: Display) -> ! {
     let mut display = display;
     let mut progress = Progress::new();
@@ -500,12 +501,22 @@ pub async fn render(display: Display) -> ! {
                 .clear(embedded_graphics::pixelcolor::Rgb565::BLACK)
                 .ok();
         } else {
-            handle(&mut display, &mut progress, &block.buf[..block.total]).await;
+            let frame = frame_of(&block);
+            if frame > progress.frame {
+                progress.frame = frame;
+                progress.tiles = 0;
+                progress.hash = 0;
+                progress.done = false;
+                progress.start = None;
+            }
+            apply_block(&mut display, &mut progress, &block).await;
         }
+        let _ = FREE.send(block.buf).await;
+
         {
             let mut snap = SNAP.lock().await;
             *snap = Snap {
-                complete: progress.start.is_none() && progress.frame != 0,
+                complete: progress.done,
                 frame: progress.frame,
                 tiles: progress.tiles,
                 hash: progress.hash,
@@ -513,7 +524,6 @@ pub async fn render(display: Display) -> ! {
                 fps: progress.rate.fps(),
             };
         }
-        let _ = FREE.send(block.buf).await;
     }
 }
 
@@ -527,40 +537,44 @@ where
     }
 }
 
-/// 一条链路的收帧循环：读到块就入队并立刻回 ACK，不等画屏。
+/// 一条链路的收帧循环：常备一块读缓冲，读完整条消息入队，再从槽池补到下一块——
+/// 补不到就是渲染满了，这里停下等，链路背压全靠这一点（USB 有流控字节顶在缓冲里，
+/// UART 没有、溢出丢掉，流式数据可接受）。数据命令不回应答，控制命令一问一答。
 pub async fn serve<T>(link: &mut T) -> !
 where
     T: Read + Write,
     T::Error: Format,
 {
     let mut reader = Reader::new();
+    let mut buf = FREE.receive().await;
     loop {
-        let mut buf = FREE.receive().await;
         let total = match read_message(&mut reader, link, &mut buf).await {
             Ok(0) => {
                 warn!("bad length, message dropped");
-                let _ = FREE.send(buf).await;
                 continue;
             }
             Ok(total) => total,
             Err(error) => {
                 warn!("read failed: {:?}", error);
-                let _ = FREE.send(buf).await;
                 continue;
             }
         };
 
         let cmd = buf[0];
         if cmd == CMD_TILES {
+            // 数据命令不回应答：流式数据丢了就丢了，上位机只管发
             if !checksum_ok(&buf[..total]) || total < 3 + BATCH_HEAD + 1 {
                 warn!("bad tile message, dropped");
-                let snap = *SNAP.lock().await;
-                reply(link, &snap.report(ST_NAK)).await;
-                let _ = FREE.send(buf).await;
                 continue;
             }
-            // 入队就回 ACK：链路可以立刻继续收下一块，不用等画屏
             let _ = QUEUE.send(Block { buf, total }).await;
+            buf = FREE.receive().await;
+            continue;
+        }
+        if cmd == CMD_CLEAR {
+            // 清屏交给渲染任务，避免两个任务同时动屏
+            let _ = QUEUE.send(Block { buf, total: 0 }).await;
+            buf = FREE.receive().await;
             let snap = *SNAP.lock().await;
             reply(link, &snap.report(ST_ACK)).await;
             continue;
@@ -568,13 +582,6 @@ where
 
         let status = match cmd {
             CMD_PING => ST_PONG,
-            CMD_CLEAR => {
-                // 清屏交给渲染任务，避免两个任务同时动屏
-                let _ = QUEUE.send(Block { buf, total: 0 }).await;
-                let snap = *SNAP.lock().await;
-                reply(link, &snap.report(ST_ACK)).await;
-                continue;
-            }
             CMD_RESET => {
                 *SNAP.lock().await = Snap::new();
                 ST_ACK
@@ -586,6 +593,5 @@ where
         };
         let snap = *SNAP.lock().await;
         reply(link, &snap.report(status)).await;
-        let _ = FREE.send(buf).await;
     }
 }

@@ -6,8 +6,8 @@
 //!
 //! 数据命令 `0x01` 传图像（载荷带帧号，板子靠它丢过期数据），控制命令 `0x02` 查询、
 //! `0x03` 清屏、`0x04` 重置板子内部状态；板子只回 `0x81`：
-//! `status + fps + busy_ms + frame + tiles + hash`，最后两个是板子本帧的进度与数据哈希，
-//! 上位机按帧核对，不需要看屏幕就知道板子收全了没有。
+//! `status + fps + busy_ms + frame + tiles + hash`。上位机目前只用 status/fps/busy_ms，
+//! 后五个字节是板子本帧的进度与哈希，保留给诊断（`SCREEN_DEBUG=1` 可看原始应答）。
 
 use std::{
     io::{Read, Write},
@@ -18,7 +18,7 @@ use serialport::SerialPort;
 
 use crate::frame::{TILE, Tile};
 
-/// 一批最多几个 tile，必须与固件一致。
+/// 一条消息最多几块 tile，必须与固件一致（上位机按帧自适应，最大这个数）。
 const MAX_TILES: usize = 32;
 /// 数据载荷头：帧号、标志、本批块数、批序号、批总数。
 const BATCH_HEAD: usize = 6;
@@ -44,22 +44,11 @@ const ST_PONG: u8 = 2;
 /// 批标志：本帧最后一批。
 const LAST_BATCH: u8 = 0x01;
 
-/// 等应答的超时。板子画 8 块约 3 ms，1 秒只是给串口排队留的余量。
-const TIMEOUT: Duration = Duration::from_millis(400);
-/// 一条消息最多重发几次。
-const RETRY: usize = 2;
+/// 串口超时：只作用于读与写。写满 1 秒说明板子彻底堵死（正常背压几十毫秒内就化开）；
+/// 读不到 PONG 1 秒就当链路断了。
+const TIMEOUT: Duration = Duration::from_secs(1);
 /// 应答载荷长度（`status + fps + busy + frame + tiles + hash`），必须与固件一致。
 const REPLY_MAX: usize = 12;
-/// 一块数据的哈希（FNV-1a），与固件同一算法，用来核对板子收到的字节。
-fn tile_hash(bytes: &[u8]) -> u32 {
-    let mut hash = 0x811c_9dc5u32;
-    for byte in bytes {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0193);
-    }
-    hash
-}
-
 /// 一块 tile 的像素字节数。
 const RAW_LEN: usize = TILE * TILE * 2;
 /// 一块 tile 的编码：原样。
@@ -71,23 +60,16 @@ const TILE_HEAD: usize = 5;
 /// 一条消息的最大字节数（不含同步字）。
 const MSG_MAX: usize = 3 + BATCH_HEAD + MAX_TILES * (TILE_HEAD + RAW_LEN) + 1;
 
-/// 板子的应答。
+/// 板子的应答：状态 + 板子自测的帧率与忙碌毫秒；后面五个字节（帧号/块数/哈希）
+/// 在连续推流下永远测不到终值，不解析，`SCREEN_DEBUG=1` 可看原始字节。
 #[derive(Clone, Copy)]
 pub struct Report {
     /// 应答状态。
     pub status: u8,
     /// 板子实测的帧率，0 表示还没测到（安静期刚过）。
     pub fps: u8,
-    /// 本帧从收到第一批到画完最后一批花掉的毫秒数，0 表示还没整帧。
+    /// 本帧从收到第一块到画完最后一块花掉的毫秒数，0 表示还没整帧。
     pub busy_ms: u16,
-    /// 板子当前的帧号。
-    pub frame: u16,
-    /// 板子本帧已应用的块数。
-    pub tiles: u16,
-    /// 板子本帧已应用数据的逐块哈希之和。
-    pub hash: u32,
-    /// 板子本帧已经画完（计数是最终值）。ACK 是入队即回，没画完时校验没意义。
-    pub complete: bool,
 }
 
 impl Report {
@@ -95,6 +77,21 @@ impl Report {
     pub fn ok(&self) -> bool {
         let status = self.status & 0x7F;
         status == ST_ACK || status == ST_PONG
+    }
+}
+
+/// 收发失败分两类：超时/坏应答是链路拥挤或瞬时干扰（降级即可），
+/// 串口本体错误（写失败、非超时读错）是口已死。
+pub enum LinkError {
+    Timeout(String),
+    Fatal(String),
+}
+
+impl std::fmt::Display for LinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LinkError::Timeout(message) | LinkError::Fatal(message) => f.write_str(message),
+        }
     }
 }
 
@@ -120,10 +117,11 @@ impl Link {
         })
     }
 
-    /// 数据命令：发一批 tile。返回应答、这批载荷的字节数、这批数据的帧哈希。
+    /// 数据命令：只管发，不等应答——板子对数据不回 ACK，丢了就丢了。
     ///
-    /// `frame` 是帧号（板子用它丢过期数据），`batch` / `total` 是本批在本帧里的序号与总批数，
-    /// `last` 标记本帧最后一批。上位机把所有批的哈希加起来，和板子回的 `hash` 核对。
+    /// `frame` 是帧号（板子靠它丢过期数据），`last` 标记本帧最后一块；
+    /// `batch` / `total` 板子不解析，仅供诊断。写失败（含写超时：半截消息已把流
+    /// 搞乱）一律按口已死处理。
     pub fn send_tiles(
         &mut self,
         frame: u16,
@@ -131,44 +129,54 @@ impl Link {
         total: u8,
         tiles: &[Tile],
         last: bool,
-    ) -> Result<(Report, usize, u32), String> {
+    ) -> Result<usize, LinkError> {
         self.msg.clear();
+        self.msg.extend_from_slice(&SYNC);
+        self.msg.push(CMD_TILES);
+        // 长度字段先占位，tile 编码完再回填
+        self.msg.extend_from_slice(&[0, 0]);
         self.msg.extend_from_slice(&frame.to_le_bytes());
         self.msg.push(if last { LAST_BATCH } else { 0 });
         self.msg.push(tiles.len() as u8);
         self.msg.push(batch);
         self.msg.push(total);
-
-        let mut hash = 0u32;
         for tile in tiles {
-            let start = self.msg.len();
             encode_tile(tile, &mut self.msg);
-            hash = hash.wrapping_add(tile_hash(&self.msg[start..]));
         }
-        let encoded = self.msg.len() - BATCH_HEAD;
-        let payload = std::mem::take(&mut self.msg);
-        let report = self.transact(CMD_TILES, &payload);
-        self.msg = payload;
-        report.map(|report| (report, encoded, hash))
+        let encoded = self.msg.len() - 2 - 3 - BATCH_HEAD;
+        let len = (self.msg.len() - 5) as u16;
+        self.msg[3..5].copy_from_slice(&len.to_le_bytes());
+        let sum = self.msg[2..]
+            .iter()
+            .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        self.msg.push(sum);
+
+        self.port
+            .write_all(&self.msg)
+            .map_err(|error| LinkError::Fatal(format!("serial write failed: {error}")))?;
+        // 数据不 flush：tcdrain 要等内核缓冲完全排空，每条消息白付一次同步回环；
+        // 内核缓冲满了 write_all 自己阻塞，就是背压
+        Ok(encoded)
     }
 
     /// 控制命令：查询板子当前实测帧率。
-    pub fn ping(&mut self) -> Result<Report, String> {
+    pub fn ping(&mut self) -> Result<Report, LinkError> {
         self.transact(CMD_PING, &[])
     }
 
     /// 控制命令：重置板子内部状态（帧号、进度、缓存、帧率采样），不动屏幕。
-    pub fn reset(&mut self) -> Result<Report, String> {
+    pub fn reset(&mut self) -> Result<Report, LinkError> {
         self.transact(CMD_RESET, &[])
     }
 
     /// 控制命令：清屏。
-    pub fn clear(&mut self) -> Result<Report, String> {
+    pub fn clear(&mut self) -> Result<Report, LinkError> {
         self.transact(CMD_CLEAR, &[])
     }
 
-    /// 发一条命令并等应答，重试 `RETRY` 次仍失败就返回最后一次的错误。
-    fn transact(&mut self, cmd: u8, payload: &[u8]) -> Result<Report, String> {
+    /// 发一条命令并等一次应答：等不到就当丢了（流式数据缺块由后续帧补）。
+    /// 不 flush：tcdrain 会等内核缓冲完全排空，每条消息白付一次同步回环。
+    fn transact(&mut self, cmd: u8, payload: &[u8]) -> Result<Report, LinkError> {
         self.msg.clear();
         self.msg.extend_from_slice(&SYNC);
         self.msg.push(cmd);
@@ -189,32 +197,37 @@ impl Link {
             );
         }
 
-        let mut last = String::new();
-        for _ in 0..RETRY {
-            self.port
-                .write_all(&self.msg)
-                .map_err(|error| format!("serial write failed: {error}"))?;
-            self.port
-                .flush()
-                .map_err(|error| format!("serial flush failed: {error}"))?;
-            match self.read_report() {
-                Ok(report) if report.ok() => return Ok(report),
-                // 重发后可能读到上一条命令的重复应答，只影响帧率数值，不影响图像
-                Ok(report) => last = format!("board rejected: status {}", report.status),
-                Err(error) => last = error,
-            }
+        self.port
+            .write_all(&self.msg)
+            .map_err(|error| LinkError::Fatal(format!("serial write failed: {error}")))?;
+        match self.read_report() {
+            Ok(report) if report.ok() => Ok(report),
+            // 迟到的上一条应答会被这次读到，只影响帧率数值，不影响图像
+            Ok(report) => Err(LinkError::Timeout(format!(
+                "board rejected: status {}",
+                report.status
+            ))),
+            Err(error) => Err(error),
         }
-        Err(last)
+    }
+
+    /// 读固定字节数；超时是链路拥挤，其余是口已死。
+    fn read_exact(&mut self, dst: &mut [u8]) -> Result<(), LinkError> {
+        self.port.read_exact(dst).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::TimedOut {
+                LinkError::Timeout(format!("read failed: {error}"))
+            } else {
+                LinkError::Fatal(format!("read failed: {error}"))
+            }
+        })
     }
 
     /// 扫同步字读一帧应答。
-    fn read_report(&mut self) -> Result<Report, String> {
+    fn read_report(&mut self) -> Result<Report, LinkError> {
         let mut byte = [0u8; 1];
         let mut prev = 0u8;
         loop {
-            self.port
-                .read_exact(&mut byte)
-                .map_err(|error| format!("no reply: {error}"))?;
+            self.read_exact(&mut byte)?;
             if prev == SYNC[0] && byte[0] == SYNC[1] {
                 break;
             }
@@ -222,19 +235,19 @@ impl Link {
         }
 
         let mut body = [0u8; 3 + REPLY_MAX + 1];
-        self.port
-            .read_exact(&mut body[..3])
-            .map_err(|error| format!("no reply header: {error}"))?;
+        self.read_exact(&mut body[..3])?;
         if body[0] != RSP_REPORT {
-            return Err(format!("unexpected reply 0x{:02x}", body[0]));
+            // 坏应答多半是字节流错位/损坏，重发后重新扫同步字即可
+            return Err(LinkError::Timeout(format!(
+                "unexpected reply 0x{:02x}",
+                body[0]
+            )));
         }
         let len = usize::from(u16::from_le_bytes([body[1], body[2]]));
         if len != REPLY_MAX {
-            return Err(format!("bad reply length {len}"));
+            return Err(LinkError::Timeout(format!("bad reply length {len}")));
         }
-        self.port
-            .read_exact(&mut body[3..3 + len + 1])
-            .map_err(|error| format!("short reply: {error}"))?;
+        self.read_exact(&mut body[3..3 + len + 1])?;
 
         if std::env::var_os("SCREEN_DEBUG").is_some() {
             eprintln!(
@@ -249,17 +262,13 @@ impl Link {
             .iter()
             .fold(0u8, |acc, byte| acc.wrapping_add(*byte));
         if sum != body[3 + len] {
-            return Err("bad reply checksum".to_string());
+            return Err(LinkError::Timeout("bad reply checksum".to_string()));
         }
 
         Ok(Report {
             status: body[3] & 0x7F,
             fps: body[4],
             busy_ms: u16::from_le_bytes([body[5], body[6]]),
-            frame: u16::from_le_bytes([body[7], body[8]]),
-            tiles: u16::from_le_bytes([body[9], body[10]]),
-            hash: u32::from_le_bytes([body[11], body[12], body[13], body[14]]),
-            complete: body[3] & 0x80 != 0,
         })
     }
 }
@@ -455,10 +464,7 @@ mod tests {
             Report {
                 status: ST_ACK,
                 fps: 0,
-                busy_ms: 0,
-                frame: 0,
-                tiles: 0,
-                hash: 0,
+                busy_ms: 0
             }
             .ok()
         );
@@ -466,10 +472,7 @@ mod tests {
             Report {
                 status: ST_PONG,
                 fps: 7,
-                busy_ms: 12,
-                frame: 3,
-                tiles: 5,
-                hash: 0
+                busy_ms: 12
             }
             .ok()
         );
@@ -477,10 +480,7 @@ mod tests {
             !Report {
                 status: 1,
                 fps: 0,
-                busy_ms: 0,
-                frame: 0,
-                tiles: 0,
-                hash: 0
+                busy_ms: 0
             }
             .ok()
         );

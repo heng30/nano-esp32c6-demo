@@ -37,6 +37,8 @@ pub struct Frame {
     cur: Vec<u16>,
     prev: Vec<u16>,
     dirty: Vec<usize>,
+    /// 下一次 update 把整屏算脏（发送口挂掉后补屏用）。
+    dirty_all: bool,
 }
 
 impl Frame {
@@ -53,6 +55,7 @@ impl Frame {
             cur: vec![0; WIDTH * HEIGHT],
             prev: vec![0; WIDTH * HEIGHT],
             dirty: Vec::with_capacity(TILES_X * TILES_Y),
+            dirty_all: false,
         }
     }
 
@@ -89,9 +92,11 @@ impl Frame {
         }
 
         self.dirty.clear();
+        let force = self.dirty_all;
+        self.dirty_all = false;
         for ty in 0..TILES_Y {
             for tx in 0..TILES_X {
-                if self.tile_changed(tx, ty) {
+                if force || self.tile_changed(tx, ty) {
                     self.dirty.push(ty * TILES_X + tx);
                 }
             }
@@ -103,6 +108,11 @@ impl Frame {
     /// 上一帧之后变化的块下标。
     pub fn dirty(&self) -> &[usize] {
         &self.dirty
+    }
+
+    /// 下一次 update 把整屏都算脏（发送口挂掉后补屏用）。
+    pub fn invalidate(&mut self) {
+        self.dirty_all = true;
     }
 
     /// 取第 `index` 块，像素按行优先展开成连续 256 个。
@@ -187,6 +197,21 @@ mod tests {
         assert!(frame.update(&mut rgba, 640, 480));
         assert!(frame.update(&mut rgba, 640, 480));
         assert!(frame.dirty().is_empty());
+    }
+
+    #[test]
+    fn invalidate_marks_every_tile_dirty() {
+        let mut frame = Frame::new();
+        let mut rgba = source(640, 480, true);
+        assert!(frame.update(&mut rgba, 640, 480));
+        assert!(!frame.dirty().is_empty());
+
+        frame.update(&mut rgba, 640, 480);
+        assert!(frame.dirty().is_empty());
+
+        frame.invalidate();
+        assert!(frame.update(&mut rgba, 640, 480));
+        assert_eq!(frame.dirty().len(), TILES_X * TILES_Y);
     }
 
     #[test]

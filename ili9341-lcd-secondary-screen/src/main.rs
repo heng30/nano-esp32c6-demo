@@ -9,7 +9,6 @@
 use defmt::info;
 use embassy_executor::Spawner;
 use embedded_graphics::{pixelcolor::Rgb565, prelude::*};
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
 use esp_hal::{
     clock::CpuClock,
     delay::Delay,
@@ -92,8 +91,8 @@ async fn main(spawner: Spawner) -> ! {
     );
     display.clear(Rgb565::BLACK).expect("clear failed");
 
-    // 收帧（两条链路各一个任务）与渲染解耦：收到块就入队、立刻回 ACK，
-    // 渲染任务单一所有者画屏，链路之间不再抢锁。
+    // 收帧（两条链路各一个任务）与渲染解耦：收到块就入队，ACK 等渲染腾出下一块槽
+    // 再回——背压精确到渲染吞吐；渲染任务单一所有者画屏，链路之间不抢锁。
     let usb = UsbSerialJtag::new(peripherals.USB_DEVICE).into_async();
     let uart = Uart::new(
         peripherals.UART0,
