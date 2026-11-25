@@ -1,0 +1,19 @@
+[package]
+name = "screen-capture"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+thiserror = { version = "2.0", default-features = false, features = ["std"] }
+derive_setters = { version = "0.1", default-features = false }
+serde = { version = "1.0", default-features = false, features = [
+  "std",
+  "derive",
+] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", default-features = false, optional = true }
+
+[features]
+default = []
+wayland = ["dep:wayland-client"]

@@ -32,6 +32,9 @@ nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1
 | `ili9341-lcd/` | 240×320 屏，16 位 8080 并口 + `ili9341`/`embedded-graphics`，占 18 根 GPIO，六个动画效果 + GB2312 中文点阵 | 内置 `build.rs` 生成字模 |
 | `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，8 页效果轮播（`src/effects/` 一个效果一个文件，最后一页是音乐播放器：Rust 画唱片/唱臂/进度条 + Slint 画滚动歌词），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 || `ili9341-lcd-slint/` | 同一块屏跑 `slint 1.19`：软件渲染 + 逐行刷屏，8 页效果轮播（`src/effects/` 一个效果一个文件，最后一页是音乐播放器：Rust 画唱片/唱臂/进度条 + Slint 画滚动歌词），`esp-alloc` 256 KB 堆 | 软件渲染器**不支持 `Path` / `transform`**，几何只能 Rust 逐像素画；构建期必须嵌 TTF；接线表指向 `ili9341-lcd/README.md`；Slint 是 GPLv3/商业双许可 |
 | `ili9341-lcd-lvgl/` | 同一块屏跑 `lvgl 9.6`，走 `lvgl-rust 0.3.1` 安全包装（两页：音乐播放器页 `lv_image` 旋转唱片 + `lv_line` 唱臂 + `lv_bar` 进度 + `lv_label` 歌词；36 秒后插播 30 秒客厅控制面板 `src/home.rs`，`lv_arc` 恒温盘 + `lv_switch` + `lv_slider` + `lv_button`），控件只留 4 字节 `Handle`、每帧重新解析，`#![no_std]` 且不用 alloc | 唯一需要 C 工具链的示例：先 `nix-shell`（`shell.nix` 给 riscv32 交叉 GCC/binutils/libclang），nolibc 的头由 `src/cshim/include` 顶替、`.cargo/config.toml` 里用 `CPATH` 注入；`CPATH` 是绝对路径，换机器要改；LVGL 配置是本目录的 `lvgl-config/lv_conf.h`（`DEP_LV_CONFIG_PATH`），`LV_USE_OBJ_ID` 那三行不能删，加控件要同时看 `LVGL_RUST_HANDLE_SLOTS`（默认 32，现设 64）；默认只开 montserrat 14 字体 |
+| `ili9341-lcd-secondary-screen/` | 同一块屏当桌面副屏：USB-Serial-JTAG 的 CDC（`/dev/ttyACM*`）收上位机推来的 320×240 帧，按 16×16 tile 局部刷新 | 屏接线同 `ili9341-lcd/`，见 [`README.md`](ili9341-lcd-secondary-screen/README.md)；协议要与 `desktop/src/link.rs` 同步改 |
+| `desktop/` | 副屏上位机（**宿主机**、命令行）：`clap` 参数选输出/串口/帧率，Wayland 抓屏整幅缩放到 320×240 后分块 diff 走串口 | 只在宿主机编译；依赖写显式版本，不走 `workspace = true` |
+| `lib/screen-capture`、`lib/screen-capture-wayland-wlr` | 宿主机抓屏库（源自上游 `heng30/wayshot`）：`zwlr_screencopy_v1` 实现 + 类型/trait 定义 | 同为宿主机 crate，别指望能编到 riscv32；抓屏常量与 `desktop/src/link.rs` 无关 |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
 | `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |
@@ -54,6 +57,9 @@ nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1
   例程，还必须带 `esp-alloc` 全局分配器。新增成员时先看它到底要不要 `esp-radio`。
 - `version` / `edition` 由根的 `[workspace.package]` 提供，成员写 `version.workspace = true`、
   `edition.workspace = true`（`kk-ui-rs` 除外，见上）。
+- **宿主机 crate 例外**：`lib/screen-capture`、`lib/screen-capture-wayland-wlr`、`desktop/` 的依赖写显式版本
+  （不写 `xx.workspace = true`），因为根 `[workspace.dependencies]` 只维护 ESP 侧那套；它们只用根里的
+  `version.workspace` / `edition.workspace` 与两条 path 依赖（`screen-capture*`）。
 - `[profile.*]` 只在根生效，成员里写会被忽略（cargo 会警告）；改编译选项去根 `Cargo.toml`。
 - 工具链只在根 `rust-toolchain.toml` 声明（`channel = "stable"`，当前落到 `1.100.0`），
   成员目录不再各自一份。
@@ -134,6 +140,9 @@ cargo fmt             # 仓内无 rustfmt.toml、无 git hook，格式靠自觉
   默认按宿主编译；即使加了 `--target`，workspace 级构建会把所有成员的特性取并集，显示例程被
   强行拉进 WiFi+BLE 并集，报 `no global memory allocator found`。**一个一个 crate 编**。
 - 产物统一在仓根 `target/`（`/target` 已在 `.gitignore`），各成员不再有自己的 `target/`。
+
+宿主机两个 crate 反过来：`cd desktop && cargo run` / `cargo test`，**不要**给它们加 `--target`；
+上位机的 `cargo test` 有 4 个单测（分块 diff + 协议打包）。
 
 `make` 等任务本仓没有；CI 也没有，全靠本地。
 
