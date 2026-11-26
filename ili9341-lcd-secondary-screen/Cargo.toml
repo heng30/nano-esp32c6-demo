@@ -5,7 +5,9 @@ edition.workspace = true
 
 [dependencies]
 esp-hal.workspace = true
-esp-rtos.workspace = true
+esp-rtos = { workspace = true, features = ["esp-radio"] }
+esp-radio = { workspace = true, features = ["wifi"] }
+esp-alloc.workspace = true
 esp-bootloader-esp-idf.workspace = true
 embassy-executor.workspace = true
 critical-section.workspace = true
@@ -22,3 +24,4 @@ embedded-io-async.workspace = true
 embassy-sync.workspace = true
 embassy-futures.workspace = true
 embassy-time.workspace = true
+embassy-net.workspace = true

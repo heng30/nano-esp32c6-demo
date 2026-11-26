@@ -9,6 +9,8 @@
 - 板载 CH343P 的 UART0（GPIO16 = U0TXD、GPIO17 = U0RXD）与 USB CDC **同时**收帧
   （`serve_usb` / `serve_uart` 两个任务），上位机连哪个口都行；走 CH343P 时 `--baud` 必须与
   固件 `UART_BAUD`（2 Mbaud）一致，CDC 链路忽略波特率
+- WiFi：板子作 **TCP 服务端**——STA 连 `R3` 热点（DHCP 取地址），监听 `TCP_PORT`（8080），
+  上位机用 `wifi --host <板子IP>` 连进来。三条链路**同时开**，帧协议完全一样，谁先连上谁推
 
 ## 协议
 
@@ -36,9 +38,13 @@ C6 D5 | cmd(1) | len(2) | payload(len) | sum8(1)
 |---|---|---|
 | `col` `row` | 1 + 1 | tile 坐标（屏幕 16×16 像素一格），屏是 20×15 格 |
 | 源像素 | — | 每块装 `(16/SCALE)²` 个源像素，板子把每个铺成 `SCALE×SCALE`；`SCALE` 是固件常量 |
-| `kind` | 1 | `0` = 原样 RGB565，`1` = 游程 |
+| `kind` | 1 | `0` = 原样 RGB565，`1` = 游程，`2` = 4 色调色板 + 2bpp 索引，`3` = 16 色调色板 + 4bpp 索引 |
 | `len` | 2 | 载荷字节数（小端）；原样时等于 `(16/SCALE)² × 2`，SCALE 为 1 时就是 512 |
 | 载荷 | `len` | 见下 |
+
+调色板（`kind = 2/3`）：先 `n` 个 u16 颜色（小端），再按低位在前的位序打包索引；
+只在「不同颜色数 ≤ 4 / ≤ 16」时由上位机选用，所以**无损**。实测在当前桌面内容上很少触发
+（每块颜色数普遍超过 16），bytes/frame 与纯游程持平（78%）。
 
 游程（`kind = 1`）的单位是一个字节的标签：
 
@@ -98,6 +104,25 @@ UART0（板载 CH343P）链路：2 Mbaud 线路上限约 196 KB/s，修掉 RX FI
 上位机表现为每批吃满超时重发、吞吐掉到 ~15 KB/s。固件用 `with_fifo_full_threshold(16)`
 把余量放大到 560 µs，重构时别把这行丢了。
 
+## WiFi 链路
+
+`src/main.rs` 顶部三个常量：`SSID = "R3"`、`PASSWORD`、`TCP_PORT = 8080`。换热点改这里重烧，
+端口改了两边一起改（上位机 `wifi --port`）。
+
+板子是 TCP **服务端**，地址由 R3 的 DHCP 分，所以每次上电先看 RTT 里这一行拿 IP：
+
+```
+INFO  wifi up, tcp server on 192.168.1.23:8080
+```
+
+- 一条连接同时只有一条：断开或出错（含 30 s 静默超时）后任务回到 accept，上位机重连即可，不用复位板子
+- 读到 `Ok(0)`（对端关流）就退出 `link::serve` 并把手上那块还回槽池；串口链路读错误同样退出、由任务外层重新开始
+- WiFi 栈吃 RAM：`HEAP_SIZE = 72 KB` 堆 + `StaticCell<StackResources<3>>`，整套 `.bss` 从 215 KB 涨到 312 KB
+  （RAM 段 452 KB），再加大缓冲前先 `size -A` 看一眼
+- 板子侧 TCP 收包实测 **393–425 KB/s**（纯收包、1 KB/5 KB/15 KB 消息四种测法一致，约每段 3 ms 唤醒开销），
+  与 USB CDC 的 280–600 KB/s 同一量级。scale 1 的 24 fps 只够约 17 KB/帧 ≈ 45 块脏块
+- `busy_ms` 报的是**纯绘制**时间（不含等链路）：实测 0.58 µs/像素，全屏 44–47 ms，所以全屏重画最快 21–22 fps
+
 ## 运行
 
 ```bash
@@ -122,6 +147,8 @@ probe-rs attach target/riscv32imac-unknown-none-elf/release/ili9341-lcd-secondar
 
 ## 注意
 
+- 三条链路同时开着，但**不要同时跑两个上位机进程**（比如 `serial` 和 `wifi` 各一个）：两边帧号会互相冲突，
+  旧帧被当过期丢掉，画面会跳。同时只跑一个。
 - 屏的 RST 与板子 EN 共复位，没有独立 GPIO（`NoReset` 空脚顶替），见 `display.rs`。
 - 引脚表、`SET_LO`/`SET_HI` 掩码表、`out` 寄存器影子值这些都在 `display.rs`，与 `../ili9341-lcd/` 是同一份实现；
   那边改了要同步过来。

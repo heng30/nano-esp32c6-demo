@@ -11,6 +11,7 @@
 
 use std::{
     io::{Read, Write},
+    net::TcpStream,
     time::Duration,
 };
 
@@ -64,6 +65,10 @@ const RAW_LEN: usize = TILE * TILE * 2;
 const KIND_RAW: u8 = 0;
 /// 一块 tile 的编码：游程。
 const KIND_RLE: u8 = 1;
+/// 一块 tile 的编码：4 色调色板 + 2 bpp 索引（色数 ≤ 4 才用，无损）。
+const KIND_PAL2: u8 = 2;
+/// 一块 tile 的编码：16 色调色板 + 4 bpp 索引（色数 ≤ 16 才用，无损）。
+const KIND_PAL4: u8 = 3;
 /// 一块 tile 的头：列、行、编码、载荷长度（u16）。
 const TILE_HEAD: usize = 5;
 /// 一条消息的最大字节数（不含同步字）。
@@ -115,29 +120,74 @@ pub struct Geometry {
     pub scale: u8,
 }
 
+/// 链路后端：串口或 TCP，都只当字节流用。
+trait Transport: Read + Write + Send {
+    /// 设置读写超时；TCP 也要设，否则对端失联时读会一直挂着。
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()>;
+}
+
+impl Transport for Box<dyn SerialPort> {
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        SerialPort::set_timeout(self.as_mut(), timeout)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+    }
+}
+
+impl Transport for TcpStream {
+    fn set_timeout(&mut self, timeout: Duration) -> std::io::Result<()> {
+        self.set_read_timeout(Some(timeout))?;
+        self.set_write_timeout(Some(timeout))
+    }
+}
+
+/// 链路目标，重连时按它重开。
+#[derive(Clone)]
+enum Target {
+    /// 串口设备与波特率。
+    Serial { path: String, baud: u32 },
+    /// 板子的 TCP 服务端地址。
+    Tcp(String),
+}
+
 /// 串口连接与复用中的打包缓冲。
 pub struct Link {
-    port: Box<dyn SerialPort>,
+    port: Box<dyn Transport>,
+    target: Target,
     msg: Vec<u8>,
     /// 板子最近一次上报的几何信息（未确认前会持续上报）。
     geometry: Option<Geometry>,
 }
 
 impl Link {
-    pub fn open(path: &str, baud: u32) -> Result<Self, String> {
-        let mut port = serialport::new(path, baud)
-            .timeout(TIMEOUT)
-            .open()
-            .map_err(|error| format!("open {path} failed: {error}"))?;
-        // 拉低 DTR/RTS：ESP 板子的自动复位电路把这两根线接到 EN/IO0，
-        // 打开串口时把它们拉高会把芯片按在复位里，UART0 链路就永远没有应答
-        let _ = port.write_data_terminal_ready(false);
-        let _ = port.write_request_to_send(false);
+    /// 串口链路：USB CDC 与板载 CH343 的 UART0 都走这里。
+    pub fn serial(path: &str, baud: u32) -> Result<Self, String> {
         Ok(Self {
-            port,
+            port: open_serial(path, baud)?,
+            target: Target::Serial {
+                path: path.to_string(),
+                baud,
+            },
             msg: Vec::with_capacity(MSG_MAX),
             geometry: None,
         })
+    }
+
+    /// WiFi 链路：板子连上热点后自己监听端口，本端作客户端连过去。
+    pub fn tcp(address: &str) -> Result<Self, String> {
+        Ok(Self {
+            port: open_tcp(address)?,
+            target: Target::Tcp(address.to_string()),
+            msg: Vec::with_capacity(MSG_MAX),
+            geometry: None,
+        })
+    }
+
+    /// 按原目标重开一条链路（死口复活用）。
+    pub fn reopen(&self) -> Result<Self, String> {
+        match &self.target {
+            Target::Serial { path, baud } => Self::serial(path, *baud),
+            Target::Tcp(address) => Self::tcp(address),
+        }
     }
 
     /// 数据命令：只管发，不等应答——板子对数据不回 ACK，丢了就丢了。
@@ -252,7 +302,11 @@ impl Link {
     /// 读固定字节数；超时是链路拥挤，其余是口已死。
     fn read_exact(&mut self, dst: &mut [u8]) -> Result<(), LinkError> {
         self.port.read_exact(dst).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::TimedOut {
+            // TCP 设了 SO_RCVTIMEO 后超时报 WouldBlock 而不是 TimedOut
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ) {
                 LinkError::Timeout(format!("read failed: {error}"))
             } else {
                 LinkError::Fatal(format!("read failed: {error}"))
@@ -330,9 +384,38 @@ impl Link {
     }
 }
 
+/// 开一条串口链路。
+fn open_serial(path: &str, baud: u32) -> Result<Box<dyn Transport>, String> {
+    let mut port = serialport::new(path, baud)
+        .timeout(TIMEOUT)
+        .open()
+        .map_err(|error| format!("open {path} failed: {error}"))?;
+    // 拉低 DTR/RTS：ESP 板子的自动复位电路把这两根线接到 EN/IO0，
+    // 打开串口时把它们拉高会把芯片按在复位里，UART0 链路就永远没有应答
+    let _ = port.write_data_terminal_ready(false);
+    let _ = port.write_request_to_send(false);
+    Ok(Box::new(port))
+}
+
+/// 连板子的 TCP 服务端。
+fn open_tcp(address: &str) -> Result<Box<dyn Transport>, String> {
+    let mut stream = TcpStream::connect(address)
+        .map_err(|error| format!("connect {address} failed: {error}"))?;
+    // 一问一答的小报文必须关掉 Nagle，否则每条应答白等一个 ACK 往返
+    stream
+        .set_nodelay(true)
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_timeout(TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    Ok(Box::new(stream))
+}
+
 /// 一块 tile 的载荷：`col, row, kind, len(u16 LE), data`。
 ///
-/// 游程编码更短就用游程，否则原样发——保证任何内容都不会比原来更大。
+/// 三种编码都试一遍，挑最小的发：原样 / 游程 / 调色板索引。
+/// 调色板只在「不同颜色数 ≤ 4 或 ≤ 16」时使用，所以永远是**无损**的，
+/// 越大也不会比游程更大。
 fn encode_tile(tile: &Tile, out: &mut Vec<u8>) {
     out.push(tile.col);
     out.push(tile.row);
@@ -343,9 +426,28 @@ fn encode_tile(tile: &Tile, out: &mut Vec<u8>) {
     let arm = tile.arm as usize;
     let pixels = &tile.pixels[..arm * arm];
     let raw_len = arm * arm * 2;
+
+    // 候选一：游程，先写进 out 占位
     encode_rle(pixels, out);
-    let len = out.len() - head - 3;
-    if len >= raw_len {
+    let mut len = out.len() - head - 3;
+    let mut kind = KIND_RLE;
+
+    // 候选二：调色板索引
+    if let Some((table, bits)) = palette_of(pixels) {
+        let mut packed = [0u8; 8 + 32 + 512];
+        let size = encode_palette(pixels, &table, bits, &mut packed);
+        if size < len {
+            out.truncate(head);
+            out.push(if bits == 2 { KIND_PAL2 } else { KIND_PAL4 });
+            out.extend_from_slice(&(size as u16).to_le_bytes());
+            out.extend_from_slice(&packed[..size]);
+            len = size;
+            kind = KIND_PAL4;
+        }
+    }
+
+    // 候选三：原样
+    if kind == KIND_RLE && len >= raw_len {
         out.truncate(head);
         out.push(KIND_RAW);
         out.extend_from_slice(&(raw_len as u16).to_le_bytes());
@@ -355,6 +457,56 @@ fn encode_tile(tile: &Tile, out: &mut Vec<u8>) {
     } else {
         out[head + 1..head + 3].copy_from_slice(&(len as u16).to_le_bytes());
     }
+}
+
+/// 统计一块里的不同颜色，返回（调色板, 每索引位数）；超过 16 色返回 `None`。
+fn palette_of(pixels: &[u16]) -> Option<([u16; 16], u8)> {
+    let mut table = [0u16; 16];
+    let mut count = 0;
+    for &pixel in pixels {
+        if table[..count].contains(&pixel) {
+            continue;
+        }
+        if count == table.len() {
+            return None;
+        }
+        table[count] = pixel;
+        count += 1;
+    }
+    let bits = if count <= 4 { 2 } else { 4 };
+    Some((table, bits))
+}
+
+/// 调色板编码：先 `n` 个 u16 颜色（小端），再按 little-endian 位序打包索引。
+fn encode_palette(pixels: &[u16], table: &[u16; 16], bits: u8, out: &mut [u8]) -> usize {
+    let colors = 1usize << bits;
+    let mut at = 0;
+    for color in &table[..colors] {
+        out[at..at + 2].copy_from_slice(&color.to_le_bytes());
+        at += 2;
+    }
+    let per_byte = 8 / bits as usize;
+    let mut byte = 0u8;
+    let mut slot = 0;
+    for &pixel in pixels {
+        let code = table[..colors]
+            .iter()
+            .position(|&color| color == pixel)
+            .unwrap_or(0) as u8;
+        byte |= code << (slot * bits as usize);
+        slot += 1;
+        if slot == per_byte {
+            out[at] = byte;
+            at += 1;
+            byte = 0;
+            slot = 0;
+        }
+    }
+    if slot != 0 {
+        out[at] = byte;
+        at += 1;
+    }
+    at
 }
 
 /// 游程编码：最高位 1 = 一个颜色重复 n 次（1 个 u16），否则 n 个像素原样（n ≤ 128）。
@@ -519,6 +671,58 @@ mod tests {
         assert_eq!(msg[2], KIND_RAW);
         assert_eq!(msg.len(), TILE_HEAD + RAW_LEN);
         assert_eq!(decode(&msg), tile.pixels);
+    }
+
+
+    #[test]
+    fn palette_wins_on_flat_tiles() {
+        // 4 色（棋盘）一块：调色板 2bpp 应明显短于游程与原样
+        let mut pixels = [0u16; TILE * TILE];
+        for (index, pixel) in pixels.iter_mut().enumerate() {
+            *pixel = [0x0000, 0xFFFF, 0xF800, 0x07E0][(index % 4) ^ 0];
+            if (index / 16) % 2 == 0 {
+                *pixel = [0x0000, 0xFFFF][index % 2];
+            }
+        }
+        let (table, bits) = palette_of(&pixels).expect("few colors");
+        assert_eq!(bits, 2);
+        let mut out = [0u8; 600];
+        let size = encode_palette(&pixels, &table, bits, &mut out);
+        assert_eq!(size, 4 * 2 + TILE * TILE / 4);
+
+        let tile = Tile {
+            col: 0,
+            row: 0,
+            arm: TILE as u8,
+            pixels,
+        };
+        let mut msg = Vec::new();
+        encode_tile(&tile, &mut msg);
+        assert_eq!(msg[2], KIND_PAL2);
+        assert_eq!(
+            usize::from(u16::from_le_bytes([msg[3], msg[4]])),
+            size
+        );
+        assert!(size < TILE * TILE * 2);
+    }
+
+    #[test]
+    fn palette_rejects_busy_tiles() {
+        // 17 种颜色就没有无损调色板可用，退回游程/原样
+        let mut pixels = [0u16; TILE * TILE];
+        for (index, pixel) in pixels.iter_mut().enumerate() {
+            *pixel = index as u16;
+        }
+        assert!(palette_of(&pixels).is_none());
+        let tile = Tile {
+            col: 0,
+            row: 0,
+            arm: TILE as u8,
+            pixels,
+        };
+        let mut msg = Vec::new();
+        encode_tile(&tile, &mut msg);
+        assert_eq!(msg[2], KIND_RAW);
     }
 
     #[test]

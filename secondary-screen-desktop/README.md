@@ -10,20 +10,27 @@
 ## 用法
 
 ```bash
-cargo run -- --list                  # 看有哪些输出与串口
-cargo run -- --verbose --fps 15      # 每帧打一行，15 fps
-cargo run -- --serial /dev/ttyACM1
-cargo run --release -- --serial /dev/ttyACM0,/dev/ttyACM1   # 双口逐块并行
-cargo run --release -- --fps 15     # 缩放是逐源像素的，release 才跑得满帧
+cargo run -- --list                                        # 看有哪些输出与串口
+cargo run -- --verbose --fps 15 serial                      # 每帧打一行，15 fps
+cargo run -- serial --serial /dev/ttyACM1                   # 指定串口
+cargo run --release -- serial --serial /dev/ttyACM0,/dev/ttyACM1   # 双口逐块并行
+cargo run --release -- wifi --host 192.168.1.23             # 走 WiFi，端口缺省 8080
+cargo run --release -- --fps 15 wifi --host 192.168.1.23 --port 8080
 ```
+
+链路用子命令选：`serial`（USB CDC / 板载 CH343 的 UART0）或 `wifi`（板子作 TCP 服务端，本端连过去）。
+其余参数是全局的，**要写在子命令前面**。板子 IP 看固件 RTT 日志里 `wifi up, tcp server on ...` 那行。
 
 | 参数 | 缺省 | 说明 |
 |---|---|---|
 | `--list` | | 列出输出与串口后退出 |
 | `-v, --verbose` | | 每帧打一行（帧号、脏块数、实际发出的块数） |
 | `--output NAME` | 第一个输出 | Wayland 输出名 |
-| `--serial A,B` | 全部 USB 串口 | 逗号分隔（也可重复给）；所有口逐块并行抢发，`ttyACMx` 会自动换成 by-id 稳定路径 |
-| `--baud N` | `2000000` | USB CDC 链路会忽略；走 UART0 时必须与固件一致 |
+| `serial --serial A,B` | 全部 USB 串口 | 逗号分隔（也可重复给）；所有口逐块并行抢发，`ttyACMx` 会自动换成 by-id 稳定路径 |
+| `serial --baud N` | `2000000` | USB CDC 链路会忽略；走 UART0 时必须与固件一致 |
+| `wifi --host IP` | 必填 | 板子的 IP（固件 RTT 日志里 `wifi up` 那行） |
+| `wifi --port N` | `8080` | 板子监听的端口，必须与固件 `TCP_PORT` 一致 |
+| `--auto-scale` | 关 | 按实测链路速率自动在 1/2/4/8 之间降采样保帧率；默认关（一直用 scale 1 保画质） |
 | `--scale N` | 板子自报 | 采样倍数，必须是 16 的约数（1/2/4/8/16）；给了就通过 `0x05` 覆盖板子默认值，抓屏只采 `1/N` 的像素、板子把每个像素铺成 `N×N`，像素数据降到约 `1/N²` |
 | `--fps N` | `10` | **初始**目标帧率，运行中按板子上报的 `busy_ms` 自动调整（上限 30） |
 | `--cursor` | 关 | 把鼠标指针抓进帧里 |
@@ -31,6 +38,9 @@ cargo run --release -- --fps 15     # 缩放是逐源像素的，release 才跑�
 分辨率不在上位机配：连上口后等板子上报几何信息（面板宽高 + 采样倍数），收到就回确认（`0x06`），
 **确认之前不开始抓屏**；板子没收到确认会每 500 ms 重报一次。采样倍数默认取板子自报值
 （固件 `SCALE_DEFAULT`），`--scale N` 可通过 `0x05` 覆盖它。
+
+WiFi 模式只有一条连接（板子一次只 accept 一条），所以口标签就是 `IP:端口`，死口复活也只是一次 TCP 重连，
+不会像串口那样经 DTR 复位板子。
 
 每秒一行状态：
 
@@ -93,6 +103,24 @@ target = clamp(1000 / busy_ms × 0.8, 1, 30)
 
 debug 构建的缩放仍是纯软件逐像素，实测 3 fps 左右，`--release` 快一个量级。
 
+## WiFi 链路的实测上限
+
+scale 1 下（`--auto-scale` 关闭，本机对板子实测）：
+
+- 板子 TCP 收包 **393–425 KB/s**，与消息大小无关——纯收包（不画屏）、1 KB / 5 KB / 15 KB 消息四种测法都在这条线上，约等于每 1460 B 段 3 ms 的唤醒开销
+- 24 fps 的每帧字节预算 = 425 KB/s ÷ 24 ≈ **17 KB** ≈ 45 块脏块（压缩后）
+- 全屏 300 块一帧 ≈ 155 KB ⇒ 约 2.7–5 fps；200 块左右实测 4.8 fps / 393 KB/s
+
+所以：打字、光标、局部滚动这类（≤45 块）能稳 24 fps，整屏动画不行。
+想在不降画质的前提下提升，只有提高链路字节率一条路（见下）。
+
+## 板子的绘制上限
+
+屏是 18 根 GPIO 打时序的 8080 并口，实测 0.58 µs/像素（32 万像素/秒）：
+
+- 一块 16×16 = 0.16 ms；全屏 76800 px = **44–47 ms** ⇒ 全屏重画最快也只有 **21–22 fps**
+- 这一条与链路无关，串口、WiFi 都一样；`#[esp_hal::ram]` 把掩码表从 flash 挪到 RAM 只省了 4%
+
 ## 注意
 
 - 抓的是**整幅输出**再缩放：库只提供整输出抓取，区域版每帧都要重连 Wayland、还要 spawn `wlr-randr`。
@@ -100,6 +128,8 @@ debug 构建的缩放仍是纯软件逐像素，实测 3 fps 左右，`--release
 - 一条消息一块 tile、只发不等应答（板子对数据不回 ACK，丢了就丢了）：实测单 CDC 稳态约
   **280 KB/s**，双口（CDC + CH343）约 **320 KB/s、板子实绘 24 fps**——粒度小到一块后
   UART 在并发推流下丢的那点块由后续帧覆盖，慢口净贡献为正。
+- 每块 tile 依次试「原样 / 游程 / 调色板索引」，挑最小的发；调色板只在色数 ≤4（2bpp）或 ≤16（4bpp）
+  时启用，因此无损，永远不会比游程大。实测当前桌面内容下游程仍是 78% of raw、调色板很少触发
 - 每块 tile 先做游程压缩，压不动就原样发（状态行的 `% of raw`）。实测文字/界面内容约 **30–58%**，
   照片视频退回 100%。整屏 300 块由 264 ms 降到约 115 ms。
 - 按压缩后折算：一帧 90 块以内可以稳在 24 fps，20 块以内可以跑满 30 fps。

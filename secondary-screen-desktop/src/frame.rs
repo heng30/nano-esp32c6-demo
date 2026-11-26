@@ -26,6 +26,8 @@ pub struct Frame {
     resizer: Resizer,
     /// 缩放参数。
     options: ResizeOptions,
+    /// 采样倍数：抓屏缩到 `1/scale`，每块只采 `(16/scale)²` 个源像素。
+    scale: usize,
     /// 每边的源像素数（`TILE / scale`）。
     arm: usize,
     /// 每行的 tile 数。
@@ -59,6 +61,7 @@ impl Frame {
         Self {
             resizer: Resizer::new(),
             options,
+            scale,
             arm,
             scaled: Image::new(width as u32, height as u32, PixelType::U8x4),
             width,
@@ -115,6 +118,11 @@ impl Frame {
         }
         self.prev.copy_from_slice(&self.cur);
         true
+    }
+
+    /// 当前采样倍数。
+    pub fn scale(&self) -> usize {
+        self.scale
     }
 
     /// 上一帧之后变化的块下标。

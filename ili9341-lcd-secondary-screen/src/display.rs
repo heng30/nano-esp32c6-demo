@@ -25,8 +25,11 @@ const DATA_MASK: u32 = data_mask();
 const CTRL_MASK: u32 = DATA_MASK | (1 << DC_PIN) | (1 << WR_PIN);
 
 /// 低 8 位像素值对应的置位掩码，去掉逐位循环。
+/// 必须落在 RAM（`#[ram]`）：放 flash 时每个像素要两次 XIP 读，实测就是 0.6 µs/像素的主因。
+#[esp_hal::ram]
 static SET_LO: [u32; 256] = mask_table(0);
-/// 高 8 位像素值对应的置位掩码。
+/// 高 8 位像素值对应的置位掩码，同样落 RAM。
+#[esp_hal::ram]
 static SET_HI: [u32; 256] = mask_table(8);
 
 const fn data_mask() -> u32 {

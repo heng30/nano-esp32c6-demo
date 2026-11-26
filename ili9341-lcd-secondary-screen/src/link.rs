@@ -20,16 +20,14 @@
 //! `tiles` 是本帧已应用的块数，`hash` 是本帧已应用数据的逐块哈希之和——上位机拿它自校验，
 //! 不看屏幕就知道板子有没有收全。上位机实现见 `secondary-screen-desktop/src/link.rs`，两边常量必须一起改。
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, Ordering};
 use defmt::{Format, info, warn};
-use embassy_futures::yield_now;
 use embassy_futures::select::{Either, select};
-use embassy_sync::{
-    blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, mutex::Mutex,
-};
+use embassy_futures::yield_now;
+use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, channel::Channel, mutex::Mutex};
+use embassy_time::Timer;
 use embedded_graphics::{pixelcolor::RgbColor, prelude::*};
 use embedded_io_async::{Read, Write};
-use embassy_time::Timer;
 use esp_hal::time::Instant;
 use static_cell::StaticCell;
 
@@ -47,8 +45,6 @@ const SCALE_DEFAULT: u8 = 1;
 static SCALE: AtomicU8 = AtomicU8::new(SCALE_DEFAULT);
 /// 上位机确认几何信息之前的重发间隔。
 const ANNOUNCE_MS: u64 = 500;
-/// 上位机是否已确认收到几何信息；没确认就一直重报。
-static GEO_ACKED: AtomicBool = AtomicBool::new(false);
 /// 一条消息最多几块 tile：上位机按帧自适应（小帧 1 块、大帧最多 32 块）。
 const MAX_TILES: usize = 32;
 /// 一块 tile 的像素字节数。
@@ -57,6 +53,10 @@ const RAW_LEN: usize = TILE * TILE * 2;
 const KIND_RAW: u8 = 0;
 /// 一块 tile 的编码：游程（最高位 1 = 重复 n 次同色，否则 n 个像素原样，n ≤ 128）。
 const KIND_RLE: u8 = 1;
+/// 一块 tile 的编码：4 色调色板 + 2 bpp 索引。
+const KIND_PAL2: u8 = 2;
+/// 一块 tile 的编码：16 色调色板 + 4 bpp 索引。
+const KIND_PAL4: u8 = 3;
 /// 一块 tile 的头：列、行、编码、载荷长度（u16）。
 const TILE_HEAD: usize = 5;
 /// 数据载荷头：帧号、标志、本批块数、批序号、批总数。
@@ -107,7 +107,6 @@ const IDLE_MS: u64 = 2000;
 /// 每收多少 tile 打一条日志。
 const LOG_EVERY: u32 = 2000;
 
-
 /// 槽池：每条消息一块（最大约 4 KB）；13 块刚好装得下一整帧（300 块 / 32 块一条 = 10 条）
 /// 加上两条链路各在手的一块与渲染在手的一块。
 /// 收帧任务补不到块就不读下一条：链路背压全靠这一点（USB 有流控字节顶在缓冲里，
@@ -121,9 +120,28 @@ static QUEUE: Channel<CriticalSectionRawMutex, Block, POOL_BLOCKS> = Channel::ne
 /// 渲染进度快照，收发任务回 ACK 时读它。
 static SNAP: Mutex<CriticalSectionRawMutex, Snap> = Mutex::new(Snap::new());
 
+/// 读链路中断的两类原因：`Io` 是驱动报错，`Eof` 是对端关了连接（只有 TCP 会这样）。
+enum Fault<E> {
+    /// 驱动返回的错误。
+    Io(E),
+    /// 读到流结束。
+    Eof,
+}
+
+/// 读一批字节；`Ok(0)` 在串口上不会出现，出现就是 TCP 对端关流。
+async fn fill<T: Read>(link: &mut T, dst: &mut [u8]) -> Result<usize, Fault<T::Error>> {
+    match link.read(dst).await {
+        Ok(0) => Err(Fault::Eof),
+        Ok(n) => Ok(n),
+        Err(error) => Err(Fault::Io(error)),
+    }
+}
+
 /// 从链路搬字节的小缓冲：SYNC 扫描逐字节，载荷整块拷。
+/// 给到 8 KB：TCP 每次唤醒拿到多少字节决定吞吐（实测一次唤醒约 1 KB 就换一次 2 ms 等待），
+/// 缓冲大一点才能一次排空驱动里排队的段。
 struct Reader {
-    buf: [u8; 128],
+    buf: [u8; 8192],
     pos: usize,
     len: usize,
 }
@@ -131,15 +149,15 @@ struct Reader {
 impl Reader {
     const fn new() -> Self {
         Self {
-            buf: [0; 128],
+            buf: [0; 8192],
             pos: 0,
             len: 0,
         }
     }
 
-    async fn byte<T: Read>(&mut self, link: &mut T) -> Result<u8, T::Error> {
+    async fn byte<T: Read>(&mut self, link: &mut T) -> Result<u8, Fault<T::Error>> {
         if self.pos == self.len {
-            self.len = link.read(&mut self.buf).await?;
+            self.len = fill(link, &mut self.buf).await?;
             self.pos = 0;
         }
         let byte = self.buf[self.pos];
@@ -148,7 +166,11 @@ impl Reader {
     }
 
     /// 拷满 `dst`：先吃缓冲里剩下的，不够再直接从链路读到目标缓冲。
-    async fn read_into<T: Read>(&mut self, link: &mut T, dst: &mut [u8]) -> Result<(), T::Error> {
+    async fn read_into<T: Read>(
+        &mut self,
+        link: &mut T,
+        dst: &mut [u8],
+    ) -> Result<(), Fault<T::Error>> {
         let rest = self.len - self.pos;
         let n = rest.min(dst.len());
         dst[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
@@ -156,7 +178,7 @@ impl Reader {
 
         let mut filled = n;
         while filled < dst.len() {
-            filled += link.read(&mut dst[filled..]).await?;
+            filled += fill(link, &mut dst[filled..]).await?;
         }
         Ok(())
     }
@@ -167,7 +189,7 @@ async fn read_message<T: Read>(
     reader: &mut Reader,
     link: &mut T,
     msg: &mut [u8],
-) -> Result<usize, T::Error> {
+) -> Result<usize, Fault<T::Error>> {
     let mut prev = 0u8;
     loop {
         let byte = reader.byte(link).await?;
@@ -269,12 +291,36 @@ fn decode_rle(data: &[u8], pixels: &mut [u16]) -> bool {
     index == pixels.len()
 }
 
+/// 解一块调色板编码的 tile：`n` 个 u16 颜色 + 打包索引（little-endian 位序）。
+fn decode_palette(data: &[u8], pixels: &mut [u16], bits: u8) -> bool {
+    let colors = 1usize << bits;
+    let per_byte = 8 / bits as usize;
+    let packed_len = pixels.len().div_ceil(per_byte);
+    if data.len() != colors * 2 + packed_len {
+        return false;
+    }
+    let (table, packed) = data.split_at(colors * 2);
+    let mask = (1u8 << bits) - 1;
+    for (index, &byte) in packed.iter().enumerate() {
+        for slot in 0..per_byte {
+            let at = index * per_byte + slot;
+            if at >= pixels.len() {
+                break;
+            }
+            let code = usize::from((byte >> (slot * bits as usize)) & mask);
+            let entry = code * 2;
+            pixels[at] = u16::from_le_bytes([table[entry], table[entry + 1]]);
+        }
+    }
+    true
+}
+
 /// 画一批 tile，返回 `(画好的块数, 这批字节的哈希之和)`。
 /// 每块里装的是 `(16/scale)²` 个源像素，这里按 scale 铺成 16×16 再整块送出。
-async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, u32) {
+async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, u32, u64) {
     let Some(spans) = tile_spans(tiles, count) else {
         warn!("bad tile layout in batch of {}", count);
-        return (0, 0);
+        return (0, 0, 0);
     };
 
     // 采样倍数决定每块里的源像素边长；16 能被它整除，拼回来正好 TILE
@@ -284,12 +330,20 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
     let mut pixels = [0u16; TILE * TILE];
     let mut drawn = 0u16;
     let mut hash = 0u32;
+    let mut draw_us = 0u64;
     for (head, body, len) in spans {
         let data = &tiles[body..body + len];
         match tiles[head + 2] {
             KIND_RLE => {
                 if !decode_rle(data, &mut source[..arm * arm]) {
                     warn!("bad rle tile, skipped");
+                    continue;
+                }
+            }
+            KIND_PAL2 | KIND_PAL4 => {
+                let bits = if tiles[head + 2] == KIND_PAL2 { 2 } else { 4 };
+                if !decode_palette(data, &mut source[..arm * arm], bits) {
+                    warn!("bad palette tile ({} bytes), skipped", data.len());
                     continue;
                 }
             }
@@ -323,16 +377,18 @@ async fn draw_tiles(display: &mut Display, tiles: &[u8], count: usize) -> (u16, 
         let row = tiles[head + 1] as u16;
         let x0 = col * TILE as u16;
         let y0 = row * TILE as u16;
+        let started = Instant::now();
         display
             .draw_raw_slice(x0, y0, x0 + TILE as u16 - 1, y0 + TILE as u16 - 1, &pixels)
             .expect("tile draw failed");
+        draw_us += started.elapsed().as_micros() as u64;
         hash = hash.wrapping_add(tile_hash(&tiles[head..body + len]));
         drawn += 1;
         // 每块都让出 CPU：UART 的 128 字节 FIFO 在 2 Mbaud 下只有 640 µs 余量，
         // 画一块的时长已经超过它，攒几块再让就会 Rx(FifoOverflowed) 丢整条消息
         yield_now().await;
     }
-    (drawn, hash)
+    (drawn, hash, draw_us)
 }
 
 /// 板子侧测到的帧率，用「每秒千分之一帧」的定点数平滑。
@@ -386,9 +442,9 @@ struct Progress {
     tiles: u16,
     /// 本帧已应用数据的逐块哈希之和。
     hash: u32,
-    /// 本帧第一批的时刻。
-    start: Option<Instant>,
-    /// 本帧从第一批到画完最后一批的毫秒数，上位机据此估板子能力。
+    /// 本帧累计的纯绘制耗时（微秒），不含等链路的时间。
+    draw_us: u64,
+    /// 本帧画完所有块的绘制毫秒数，上位机据此估板子的绘制能力。
     busy_ms: u16,
     /// 本帧已画完（LAST 已画）。
     done: bool,
@@ -404,7 +460,7 @@ impl Progress {
             frame: 0,
             tiles: 0,
             hash: 0,
-            start: None,
+            draw_us: 0,
             busy_ms: 0,
             done: false,
             rate: Rate::new(),
@@ -412,7 +468,6 @@ impl Progress {
         }
     }
 }
-
 
 /// 队列里一个待渲染的块：整条消息的槽 + 长度（`total == 0` 表示清屏）。
 pub struct Block {
@@ -479,20 +534,17 @@ async fn apply(
     count: usize,
     last: bool,
 ) {
-    if progress.start.is_none() {
-        progress.start = Some(Instant::now());
-    }
-    let (drawn, hash) = draw_tiles(display, tiles, count).await;
+    let (drawn, hash, draw_us) = draw_tiles(display, tiles, count).await;
+    progress.draw_us += draw_us;
     progress.tiles = progress.tiles.saturating_add(drawn);
     progress.hash = progress.hash.wrapping_add(hash);
     progress.total += u32::from(drawn);
 
     if last {
         progress.done = true;
-        if let Some(start) = progress.start.take() {
-            // 至少算 1 ms：单批 1 块的帧真实耗时不足 1 ms，报 0 会让上位机以为是「没数据」
-            progress.busy_ms = start.elapsed().as_millis().clamp(1, u64::from(u16::MAX)) as u16;
-        }
+        // 只算纯绘制：把等链路的时间也计入会拖低上位机算出的目标帧率
+        progress.busy_ms = progress.draw_us.div_ceil(1000).clamp(1, u64::from(u16::MAX)) as u16;
+        progress.draw_us = 0;
         progress.rate.mark();
     }
     if progress.total >= LOG_EVERY {
@@ -548,7 +600,7 @@ pub async fn render(display: Display) -> ! {
                 progress.tiles = 0;
                 progress.hash = 0;
                 progress.done = false;
-                progress.start = None;
+                progress.draw_us = 0;
             }
             apply_block(&mut display, &mut progress, &block).await;
         }
@@ -596,27 +648,21 @@ where
 /// 一条链路的收帧循环：常备一块读缓冲，读完整条消息入队，再从槽池补到下一块——
 /// 补不到就是渲染满了，这里停下等，链路背压全靠这一点（USB 有流控字节顶在缓冲里，
 /// UART 没有、溢出丢掉，流式数据可接受）。数据命令不回应答，控制命令一问一答。
-pub async fn serve<T>(link: &mut T) -> !
+///
+/// 读失败或对端关流就返回，由调用方决定重连（TCP）还是继续（串口）。
+pub async fn serve<T>(link: &mut T)
 where
     T: Read + Write,
     T::Error: Format,
 {
     let mut reader = Reader::new();
     let mut buf = FREE.receive().await;
+    // 每条链路各自确认几何信息：串口与 WiFi 三条链路可能先后连上，共用标志会让后到的收不到
+    let mut acked = false;
     loop {
         // 上位机确认收到几何信息之前，隔一段时间重报一次；它一开始推流就说明已经知道尺寸
-        let total = if GEO_ACKED.load(Ordering::Relaxed) {
-            match read_message(&mut reader, link, &mut buf).await {
-                Ok(0) => {
-                    warn!("bad length, message dropped");
-                    continue;
-                }
-                Ok(total) => total,
-                Err(error) => {
-                    warn!("read failed: {:?}", error);
-                    continue;
-                }
-            }
+        let read = if acked {
+            read_message(&mut reader, link, &mut buf).await.map(Some)
         } else {
             reply(link, &geometry_report()).await;
             // 未确认阶段上位机不会发数据，所以超时打断读取不会丢半个消息
@@ -626,16 +672,25 @@ where
             )
             .await
             {
-                Either::First(Ok(0)) => {
-                    warn!("bad length, message dropped");
-                    continue;
+                Either::First(result) => result.map(Some),
+                Either::Second(()) => Ok(None),
+            }
+        };
+        let total = match read {
+            Ok(Some(0)) => {
+                warn!("bad length, message dropped");
+                continue;
+            }
+            Ok(Some(total)) => total,
+            Ok(None) => continue,
+            Err(fault) => {
+                match fault {
+                    Fault::Eof => info!("link closed by host"),
+                    Fault::Io(error) => warn!("read failed: {:?}", error),
                 }
-                Either::First(Ok(total)) => total,
-                Either::First(Err(error)) => {
-                    warn!("read failed: {:?}", error);
-                    continue;
-                }
-                Either::Second(()) => continue,
+                // 手上一块还回池子，否则每断一次线就永久少一块
+                let _ = FREE.try_send(buf);
+                return;
             }
         };
 
@@ -674,7 +729,7 @@ where
                 }
             }
             CMD_GEO_ACK => {
-                GEO_ACKED.store(true, Ordering::Relaxed);
+                acked = true;
                 info!("geometry acked by host");
                 ST_ACK
             }
