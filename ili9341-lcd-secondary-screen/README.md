@@ -10,7 +10,7 @@
   （`serve_usb` / `serve_uart` 两个任务），上位机连哪个口都行；走 CH343P 时 `--baud` 必须与
   固件 `UART_BAUD`（2 Mbaud）一致，CDC 链路忽略波特率
 - WiFi：板子作 **TCP 服务端**——STA 连 `R3` 热点（DHCP 取地址），监听 `TCP_PORT`（8080），
-  上位机用 `wifi --host <板子IP>` 连进来。三条链路**同时开**，帧协议完全一样，谁先连上谁推
+  上位机用 `--host <板子IP>` 连进来（与 `--serial` 同给就是分带并行，带宽相加）。三条链路**同时开**，帧协议完全一样，谁先连上谁推
 
 ## 协议
 
@@ -71,7 +71,7 @@ C6 D5 | cmd(1) | len(2) | payload(len) | sum8(1)
 之后收到的过期帧块直接丢。渲染任务取到一块就画一块（每块还让出 CPU 让收帧任务排空
 FIFO），不存在攒批。推进由渲染任务单一所有者判定，无需加锁。
 
-两边常量必须一起改：本目录 `src/link.rs` 与 `../secondary-screen-desktop/src/link.rs`、`../secondary-screen-desktop/src/frame.rs`。
+两边常量必须一起改：本目录 `src/link/protocol.rs` 与 `../secondary-screen-desktop/src/link.rs`、`../secondary-screen-desktop/src/frame.rs`。
 
 ## 吞吐与上限
 

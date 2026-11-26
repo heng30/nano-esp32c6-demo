@@ -4,7 +4,6 @@
 //! 板子的状态（帧率/忙碌毫秒）只从控制命令（ping）的应答里拿。
 
 use std::{
-    collections::VecDeque,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
@@ -13,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use screen_capture::CaptureStreamConfig;
 
 mod frame;
@@ -40,12 +39,9 @@ const PING: Duration = Duration::from_millis(500);
 const REPORT: Duration = Duration::from_secs(1);
 /// 一条消息最多几块 tile，与固件一致。
 const MAX_BATCH: usize = 32;
-/// 串口一整帧切成多少条消息：每消息只要几十微秒，细粒度换低延迟。
-const MESSAGES_SERIAL: usize = 10;
-/// WiFi 一整帧切成多少条消息：TCP 每消息要一个往返（实测 2–6 ms），消息少才能跑满带宽。
-const MESSAGES_WIFI: usize = 3;
-/// WiFi 链路每条消息至少几块：一块一条会把小更新的延迟抬到几十毫秒。
-const MIN_BATCH_WIFI: usize = 8;
+/// 一整帧切成多少条消息：批次大小必须全帧统一（多链路抢同一帧的批），
+/// 取串口友好的细粒度，TCP 侧每帧十来个往返相对一帧几十毫秒的绘制可忽略。
+const MESSAGES_PER_FRAME: usize = 10;
 /// 自动降采样最多降到这个倍数（16 时每块只剩 1 个源像素，画面糊成马赛克）。
 const MAX_AUTO_SCALE: usize = 8;
 /// 自动采样倍数按这个帧率算每帧字节预算：链路实测多快，就压到一帧放得进 24 fps。
@@ -61,6 +57,11 @@ const SETTLE: Duration = Duration::from_millis(2500);
 const DEFAULT_BAUD: u32 = 2_000_000;
 /// 默认 TCP 端口（板子作服务端的监听口，必须与固件 `TCP_PORT` 一致）。
 const DEFAULT_PORT: u16 = 8080;
+/// 等板子把 WiFi 连起来的最长时间：同时开串口时打开 CH343 会复位整块板子，
+/// WiFi 得重连 + DHCP，几秒才开始监听。
+const TCP_WAIT: Duration = Duration::from_secs(20);
+/// 重试连板子 TCP 的间隔。
+const TCP_RETRY: Duration = Duration::from_millis(500);
 
 /// 副屏上位机：抓 Wayland 输出的一角，按 16×16 分块 diff，走串口推给 ESP32-C6。
 #[derive(Parser)]
@@ -82,9 +83,23 @@ struct Args {
     #[arg(long)]
     output: Option<String>,
 
-    /// 链路模式：串口或 WiFi
-    #[command(subcommand)]
-    mode: Option<Mode>,
+    /// 串口设备列表，逗号分隔（也可重复给多次）；缺省自动探测所有 USB 串口。
+    /// 所有口逐块并行抢发；挂掉的口自动退出（下一帧整屏补推）、恢复后自动归队
+    #[arg(long, value_delimiter = ',')]
+    serial: Vec<String>,
+
+    /// 波特率（USB CDC 链路忽略；走 UART0 时要与固件一致）
+    #[arg(long, default_value_t = DEFAULT_BAUD)]
+    baud: u32,
+
+    /// 板子的 IP，看固件 RTT 日志里 `wifi up, tcp server on ...` 那行；
+    /// 与 --serial 同时给就串口和 WiFi 一起发
+    #[arg(long)]
+    host: Option<String>,
+
+    /// 板子监听的端口，必须与固件 `TCP_PORT` 一致
+    #[arg(long, default_value_t = DEFAULT_PORT)]
+    port: u16,
 
     /// 按实测链路速率自动降采样（1→2→4→8），默认关：关了就一直用 scale 1 保画质
     #[arg(long)]
@@ -98,33 +113,6 @@ struct Args {
     /// 初始目标帧率，运行中按板子上报的 busy_ms 自动调整（上限 30）
     #[arg(long, default_value_t = DEFAULT_FPS)]
     fps: f64,
-}
-
-/// 链路模式：串口（USB CDC / 板载 CH343 的 UART0）或 WiFi（板子作 TCP 服务端）。
-#[derive(Subcommand)]
-enum Mode {
-    /// 走串口：可多口并行抢发
-    Serial {
-        /// 串口设备列表，逗号分隔（也可重复给多次）；缺省自动探测所有 USB 串口。
-        /// 所有口逐块并行抢发；挂掉的口自动退出（下一帧整屏补推）、恢复后自动归队
-        #[arg(long, value_delimiter = ',')]
-        serial: Vec<String>,
-
-        /// 波特率（USB CDC 链路忽略；走 UART0 时要与固件一致）
-        #[arg(long, default_value_t = DEFAULT_BAUD)]
-        baud: u32,
-    },
-
-    /// 走 WiFi：板子连上热点后自己监听 TCP 端口，本端连过去
-    Wifi {
-        /// 板子的 IP，看固件 RTT 日志里 `wifi up, tcp server on ...` 那行
-        #[arg(long)]
-        host: String,
-
-        /// 板子监听的端口，必须与固件 `TCP_PORT` 一致
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
-    },
 }
 
 fn main() {
@@ -224,6 +212,27 @@ fn resolve_ports(candidates: &[String]) -> Vec<String> {
     ports
 }
 
+/// 连板子的 TCP 服务端并等到它能应答：同时开串口时打开 CH343 会复位整块板子，
+/// WiFi 得重连上热点、拿到 DHCP 地址才开始监听，这一次 connect 必然失败。
+fn connect_tcp(address: &str) -> Result<Link, String> {
+    let deadline = Instant::now() + TCP_WAIT;
+    loop {
+        let error = match Link::tcp(address) {
+            Ok(mut link) => match link.ping() {
+                Ok(_) => return Ok(link),
+                Err(error) => error.to_string(),
+            },
+            Err(error) => error,
+        };
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{address}: {error} (is the board up? check RTT for `wifi up`)"
+            ));
+        }
+        thread::sleep(TCP_RETRY);
+    }
+}
+
 /// 依次打开每个候选口；等板子复位与 USB 重枚举稳定后逐个 ping，
 /// ping 不通的再开一次重试（fd 可能因重枚举失效）。返回所有能应答的口，一个都不应答才报错。
 fn connect(candidates: &[String], baud: u32) -> Result<Vec<(String, Link)>, String> {
@@ -269,32 +278,28 @@ fn connect(candidates: &[String], baud: u32) -> Result<Vec<(String, Link)>, Stri
     Ok(links)
 }
 
-/// 一帧待推的活：所有口共享，空闲口用原子游标抢批，速率快的口自然抢得多。
+/// 一帧待推的活：所有链路共享，空闲链路用原子游标抢批，快的自然抢得多。
 struct Job {
-    /// 帧号，板子靠它丢过期数据。
+    /// 帧号，板子靠它判过期。
     frame_no: u16,
-    /// 整帧脏块。
-    tiles: Arc<Vec<Tile>>,
+    /// 整帧脏块（按 tile 下标升序）。
+    tiles: Vec<Tile>,
     /// 下一批的批号。
     cursor: AtomicUsize,
     /// 本帧每条消息带几块。
     batch: usize,
     /// 本帧总批数。
     batches: usize,
-    /// 已推完的批数，等于总批数时本帧推完。
+    /// 已推完的批数，等于总批数时整帧推完、放行下一帧。
     done: AtomicUsize,
-    /// 所有块都已写完（数据不等应答），抓屏线程看到它才会发布下一帧。
-    sent_all: AtomicBool,
     /// 本帧发布时刻。
     published: Instant,
 }
 
 /// 抓屏线程与各发送线程共享的状态。
 struct Shared {
-    /// 当前待推的整帧；没校验完就不会被替换。
-    /// 待发帧队列：最多两帧（一个在发、一个备好），发线程取队首。
-    /// 只淘汰「批已全被取完」的帧——发了一半的帧绝不能丢，否则那些块永久停旧。
-    slot: Mutex<VecDeque<Arc<Job>>>,
+    /// 在飞的那一帧：推完才换下一帧（一帧在飞，屏幕上的块才属于同一帧，否则出条纹）。
+    job: Mutex<Option<Arc<Job>>>,
     /// 目标帧率 × 10。
     target: AtomicU32,
     stats: Mutex<Stats>,
@@ -320,10 +325,6 @@ struct Shared {
     label: String,
     /// 各口的短标签，下标即口序号。
     port_labels: Vec<String>,
-    /// 一条消息最少包几块：串口 1 块，WiFi 多块以摊薄 TCP 往返。
-    min_batch: usize,
-    /// 一整帧大约切成几条消息。
-    messages: usize,
     /// 板子当前按哪个采样倍数解码（0 号口通知成功后更新）。
     scale: AtomicUsize,
     /// 控制器想要的采样倍数；0 号口负责通知板子。
@@ -403,37 +404,28 @@ fn run(args: Args) -> Result<(), String> {
             .clone(),
     };
 
-    let Some(mode) = args.mode else {
-        return Err("specify `serial` or `wifi`".into());
-    };
-    let (mut links, link_info, messages, min_batch) = match mode {
-        // 指定了口就只用指定的那些，一个都不应答就报错——不偷偷换到别的口。
-        // 只有完全没指定时才自动探测。
-        Mode::Serial { serial, baud } => {
-            let candidates = if serial.is_empty() {
-                usb_ports()
-            } else {
-                serial
-            };
-            if candidates.is_empty() {
-                return Err("no usb serial port found".into());
-            }
-            (connect(&candidates, baud)?, format!("{baud} baud"), MESSAGES_SERIAL, 1)
+    // 两条链路可以一起用：`--host` 开 WiFi，`--serial` 开串口；明文给口就只用那些，
+    // 一个都不指定时退回自动探测 USB 串口（老用法）。
+    let mut links: Vec<(String, Link)> = Vec::new();
+    let mut info: Vec<String> = Vec::new();
+    if !args.serial.is_empty() || args.host.is_none() {
+        let candidates = if args.serial.is_empty() {
+            usb_ports()
+        } else {
+            args.serial.clone()
+        };
+        if candidates.is_empty() {
+            return Err("no usb serial port found".into());
         }
-        Mode::Wifi { host, port } => {
-            let address = format!("{host}:{port}");
-            let mut link = Link::tcp(&address).map_err(|error| {
-                format!("{address}: {error} (is the board up? check RTT for `wifi up`)")
-            })?;
-            link.ping().map_err(|error| format!("{address}: {error}"))?;
-            (
-                vec![(address.clone(), link)],
-                address,
-                MESSAGES_WIFI,
-                MIN_BATCH_WIFI,
-            )
-        }
-    };
+        links.extend(connect(&candidates, args.baud)?);
+        info.push(format!("{} baud", args.baud));
+    }
+    if let Some(host) = &args.host {
+        let address = format!("{host}:{}", args.port);
+        links.push((address.clone(), connect_tcp(&address)?));
+        info.push(address);
+    }
+    let link_info = info.join(" + ");
     let labels: Vec<String> = links.iter().map(|(port, _)| short_label(port)).collect();
 
     // 分辨率由板子上报：收到并确认之前不开始抓屏，没收到确认它会一直重报
@@ -493,7 +485,7 @@ fn run(args: Args) -> Result<(), String> {
 
     let target = args.fps.clamp(MIN_FPS, MAX_FPS);
     let shared = Arc::new(Shared {
-        slot: Mutex::new(VecDeque::new()),
+        job: Mutex::new(None),
         target: AtomicU32::new((target * TARGET_SCALE) as u32),
         stats: Mutex::new(Stats {
             target,
@@ -511,8 +503,6 @@ fn run(args: Args) -> Result<(), String> {
         next_report: Mutex::new(None),
         label: labels.join(" + "),
         port_labels: labels,
-        min_batch,
-        messages,
         scale: AtomicUsize::new(scale),
         wanted_scale: AtomicUsize::new(scale),
         auto_scale,
@@ -535,14 +525,16 @@ fn run(args: Args) -> Result<(), String> {
     };
 
     let mut frame = Frame::new(panel_w, panel_h, scale);
+    // 还没推出去、要留到下一帧带的块（下标）：一帧在飞，推不完就整帧顺延
+    let mut pending: Vec<usize> = Vec::new();
     let verbose = args.verbose;
     let mut last_callback: Option<Instant> = None;
     let result = screen_capture_wayland_wlr::capture_output_stream(config, |mut data| {
         if cancel.load(Ordering::Relaxed) {
             return;
         }
-        // 队列里已经堆了两帧（在发 + 备好）就不再抓：抓屏永远不等串口
-        if shared.slot.lock().expect("slot poisoned").len() >= 2 {
+        // 上一帧还在发就不再抓：抓屏永远不等链路（推不完由 dispatch 顺延）
+        if shared.job.lock().expect("job poisoned").is_some() {
             return;
         }
 
@@ -569,11 +561,7 @@ fn run(args: Args) -> Result<(), String> {
             return;
         }
 
-        let mut tiles = Vec::with_capacity(frame.dirty().len());
-        for &index in frame.dirty() {
-            tiles.push(frame.tile(index));
-        }
-        let dirty = tiles.len();
+        let dirty = frame.dirty().len();
 
         if let Ok(mut stats) = shared.stats.lock() {
             stats.captured += 1;
@@ -589,9 +577,7 @@ fn run(args: Args) -> Result<(), String> {
                 started.elapsed()
             );
         }
-        if !tiles.is_empty() {
-            publish(&shared, tiles);
-        }
+        dispatch(&shared, &frame, &mut pending);
     });
 
     cancel.store(true, Ordering::Relaxed);
@@ -608,34 +594,39 @@ fn batch_for(tiles: usize, messages: usize, min: usize) -> usize {
     tiles.div_ceil(messages).clamp(min, MAX_BATCH)
 }
 
-/// 组一帧 Job 发布到槽位；上一帧还没推完就放弃这一帧。
-fn publish(shared: &Shared, tiles: Vec<Tile>) {
-    let mut slot = shared.slot.lock().expect("slot poisoned");
-    // 队里已经有「在发 + 备好」两帧就不再收：抓屏永远不等链路。
-    // 腾位只能弹已取完的队首，发到一半的帧不能丢，否则那些块永久停旧。
-    while slot.len() >= 2 {
-        if slot
-            .front()
-            .is_some_and(|front| front.cursor.load(Ordering::Relaxed) >= front.batches)
-        {
-            slot.pop_front();
-            continue;
-        }
+/// 把本帧的脏块按「tile 下标取模」分到各条链路自己的槽位。
+///
+/// 同一个块永远只有一个写者，所以慢链路落后时其区域不会被另一条链路的旧内容
+/// 盖住（整帧抢活做不到这一点，那就是花屏的来源）；某条链路的槽还占着，就把分
+/// 给它的块留到下一帧一起带，绝不丢——丢了那几块会永远停在旧内容上。
+/// 把本帧的脏块组一个 Job 放进槽位。
+///
+/// 一帧在飞：上一帧的批没全发完就不换帧，屏幕上各条带才属于同一帧（否则出条纹）。
+/// 帧内抢占式分活：哪条链路空下来就用原子游标抢下一批，快的自然抢得多，
+/// 不会被慢链路卡住（按固定比例/固定分带切都会让快的干等）。
+/// 槽还占着就把本帧的块全留着，下一帧一起带——绝不丢，丢了那块永久停旧。
+fn dispatch(shared: &Shared, frame: &Frame, pending: &mut Vec<usize>) {
+    pending.extend(frame.dirty().iter().copied());
+    if pending.is_empty() {
         return;
     }
+    let mut slot = shared.job.lock().expect("job poisoned");
+    if slot.is_some() {
+        return;
+    }
+    let tiles: Vec<Tile> = pending.iter().map(|&tile| frame.tile(tile)).collect();
+    let batch = batch_for(tiles.len(), MESSAGES_PER_FRAME, 1);
     let frame_no = (shared.frame_no.fetch_add(1, Ordering::Relaxed) + 1) as u16;
-    let batch = batch_for(tiles.len(), shared.messages, shared.min_batch);
-    let batches = tiles.len().div_ceil(batch);
-    slot.push_back(Arc::new(Job {
+    *slot = Some(Arc::new(Job {
         frame_no,
-        tiles: Arc::new(tiles),
         cursor: AtomicUsize::new(0),
+        batches: tiles.len().div_ceil(batch),
         batch,
-        batches,
+        tiles,
         done: AtomicUsize::new(0),
-        sent_all: AtomicBool::new(false),
         published: Instant::now(),
     }));
+    pending.clear();
 }
 
 /// ping 一次拿板子状态：成功记帧率/忙碌毫秒、失败计数；连着 `PING_STRIKE` 次
@@ -657,8 +648,8 @@ fn probe(link: &mut Link, shared: &Shared, cancel: &AtomicBool, index: usize, mi
     }
 }
 
-/// 单个口的发送线程：逐块抢活只管发——数据不等应答，丢了就丢了，画面靠后续帧补。
-/// 板子状态只能从控制命令拿：活口里序号最小的口每 500 ms 顺路 ping 一次。
+/// 单个口的发送线程：把自己那一带的块按序发出去——数据不等应答，丢了就丢了，
+/// 画面靠后续帧补。板子状态只能从控制命令拿：每条链路每 500 ms 各自 ping 一次。
 /// 死口先 ping 原连接复活；重开会复位板子，要等其它口全挂才试，且至少隔 REVIVE_REOPEN。
 fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>, index: usize) {
     let mut last_ping: Option<Instant> = None;
@@ -693,30 +684,8 @@ fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>, index
             thread::sleep(Duration::from_millis(1));
             continue;
         }
-        let job = shared.slot.lock().expect("slot poisoned").front().cloned();
-        let Some(job) = job else {
-            // 空闲：ping 一来拿板子状态、二来看链路死活
-            if last_ping.is_none_or(|at| at.elapsed() >= PING) {
-                last_ping = Some(Instant::now());
-                probe(&mut link, &shared, &cancel, index, &mut ping_misses);
-            }
-            thread::sleep(Duration::from_millis(1));
-            continue;
-        };
-        if job.sent_all.load(Ordering::Relaxed) {
-            // 这一帧发完了：从队首弹掉，让备好的下一帧顶上
-            let mut slot = shared.slot.lock().expect("slot poisoned");
-            if slot.front().is_some_and(|front| Arc::ptr_eq(front, &job)) {
-                slot.pop_front();
-            }
-            continue;
-        }
-        // 数据不再回应答，板子状态只能从控制应答里拿：
-        // 活口里序号最小的口每 500 ms 顺路 ping 一次
-        if last_ping.is_none_or(|at| at.elapsed() >= PING)
-            && (0..shared.alive.len()).find(|&other| shared.alive[other].load(Ordering::Relaxed))
-                == Some(index)
-        {
+        // 板子状态与链路死活都靠控制命令看：每条链路各自 ping 自己
+        if last_ping.is_none_or(|at| at.elapsed() >= PING) {
             last_ping = Some(Instant::now());
             probe(&mut link, &shared, &cancel, index, &mut ping_misses);
         }
@@ -730,42 +699,39 @@ fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>, index
                 eprintln!("scale {current} -> {wanted}");
             }
         }
+        let job = shared.job.lock().expect("job poisoned").clone();
+        let Some(job) = job else {
+            thread::sleep(Duration::from_millis(1));
+            continue;
+        };
         let batch = job.cursor.fetch_add(1, Ordering::Relaxed);
         if batch >= job.batches {
-            // 没活了：整帧收尾由拿到最后一块的线程做，这里等下一帧
+            // 没活了：等别的链路把这一帧剩下的批发完
             thread::sleep(Duration::from_millis(1));
             continue;
         }
         let start = batch * job.batch;
         let end = (start + job.batch).min(job.tiles.len());
-        let is_last = batch + 1 == job.batches;
         let tiles = &job.tiles[start..end];
+        let last = batch + 1 == job.batches;
         let sent_at = Instant::now();
         // batch/total 板子不解析（超 255 会绕回），只带出去方便诊断
-        let result = link.send_tiles(
-            job.frame_no,
-            (batch + 1) as u8,
-            job.batches as u8,
-            tiles,
-            is_last,
-        );
-        let sent_us = sent_at.elapsed().as_micros() as u64;
-        shared.port_us[index].fetch_add(sent_us, Ordering::Relaxed);
-        match result {
+        match link.send_tiles(job.frame_no, (batch + 1) as u8, job.batches as u8, tiles, last) {
             Ok(encoded) => {
+                let sent_us = sent_at.elapsed().as_micros() as u64;
+                shared.port_us[index].fetch_add(sent_us, Ordering::Relaxed);
                 shared.port_batches[index].fetch_add(1, Ordering::Relaxed);
                 shared.port_bytes[index].fetch_add(encoded as u64, Ordering::Relaxed);
                 if let Ok(mut stats) = shared.stats.lock() {
-                    stats.tiles += (end - start) as u64;
+                    stats.tiles += tiles.len() as u64;
                     stats.bytes += encoded as u64;
-                    stats.raw_bytes += (end - start) as u64 * (TILE * TILE * 2) as u64;
+                    stats.raw_bytes += tiles.len() as u64 * (TILE * TILE * 2) as u64;
                 }
-                let done = job.done.fetch_add(1, Ordering::Relaxed) + 1;
-                if done == job.batches {
+                if job.done.fetch_add(1, Ordering::Relaxed) + 1 == job.batches {
                     finish_frame(&shared, &job);
                 }
             }
-            // 写失败（含写超时：半截消息已把流搞乱）判死，块还回去让别人接手
+            // 写失败（含写超时：半截消息已把流搞乱）判死，这一批还回去让别人接手
             Err(error) => {
                 job.cursor.fetch_sub(1, Ordering::Relaxed);
                 mark_dead(&shared, &cancel, index, error.to_string());
@@ -788,16 +754,21 @@ fn mark_dead(shared: &Shared, cancel: &AtomicBool, index: usize, error: String) 
     }
 }
 
-/// 整帧写完的收尾：记账并放行下一帧。数据不等应答，渲染在板子侧异步追赶，
+/// 整帧写完的收尾：记账、调帧率、打状态行。数据不等应答，渲染在板子侧异步追赶，
 /// 丢的块要么被后续帧覆盖、要么在判死后的整屏重推里补上。
-fn finish_frame(shared: &Shared, job: &Job) {
+fn finish_frame(shared: &Shared, job: &Arc<Job>) {
     if let Ok(mut stats) = shared.stats.lock() {
         stats.send_us = job.published.elapsed().as_micros() as u64;
         stats.send_max_us = stats.send_max_us.max(stats.send_us);
         stats.sent += 1;
     }
+    // 整帧推完才放行下一帧：屏幕上的块必须属于同一帧，否则出现条纹
+    if let Ok(mut slot) = shared.job.lock()
+        && slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, job))
+    {
+        *slot = None;
+    }
     adjust(shared);
-    job.sent_all.store(true, Ordering::Release);
 
     // 状态行由收尾线程打印，间隔 1 秒
     let due = {
@@ -856,19 +827,13 @@ fn adjust(shared: &Shared) {
     if !due {
         return;
     }
-    // 上限取两者的短板：板子纯绘制能力（busy_ms）与上一帧真把数据推完的耗时
+    // 上限只看板子的绘制能力（busy_ms）：链路跟不上会自然表现为该链路槽占满、抓屏早退，
+    // 再按端到端发送耗时把目标帧率压死只会让脏块越积越多、每帧全屏重推。
     let busy = *shared.busy.lock().expect("busy poisoned");
-    let sent_ms = shared
-        .stats
-        .lock()
-        .map(|stats| stats.send_us as f64 / 1000.0)
-        .unwrap_or(0.0);
-    let wanted = if busy > 0.0 && sent_ms > 0.0 {
-        1000.0 / busy.max(sent_ms)
-    } else {
+    if busy <= 0.0 {
         return;
     }
-    .clamp(MIN_FPS, MAX_FPS);
+    let wanted = (1000.0 / busy).clamp(MIN_FPS, MAX_FPS);
     let current = f64::from(shared.target.load(Ordering::Relaxed)) / TARGET_SCALE;
     // 快降慢升：降立刻降（链路积压），升按差值的一半追，一秒内回到上限
     let target = if wanted < current {

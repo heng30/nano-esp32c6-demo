@@ -116,10 +116,13 @@ async fn serve_wifi(stack: Stack<'static>) -> ! {
         socket.close();
         Timer::after_millis(50).await;
     }
-}#[embassy_executor::task]
+}
+
+#[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, Interface>) {
     runner.run().await
 }
+
 /// 维持 WiFi 连接：掉线、或一开始就关联失败，等 2 秒重试。
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
@@ -175,8 +178,6 @@ async fn main(spawner: Spawner) -> ! {
         &mut delay,
     );
     display.clear(Rgb565::BLACK).expect("clear failed");
-
-
 
     // 收帧（三条链路各一个任务）与渲染解耦：收到块就入队，ACK 等渲染腾出下一块槽
     // 再回——背压精确到渲染吞吐；渲染任务单一所有者画屏，链路之间不抢锁。

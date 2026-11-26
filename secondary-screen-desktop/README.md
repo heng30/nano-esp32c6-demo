@@ -11,25 +11,31 @@
 
 ```bash
 cargo run -- --list                                        # 看有哪些输出与串口
-cargo run -- --verbose --fps 15 serial                      # 每帧打一行，15 fps
-cargo run -- serial --serial /dev/ttyACM1                   # 指定串口
-cargo run --release -- serial --serial /dev/ttyACM0,/dev/ttyACM1   # 双口逐块并行
-cargo run --release -- wifi --host 192.168.1.23             # 走 WiFi，端口缺省 8080
-cargo run --release -- --fps 15 wifi --host 192.168.1.23 --port 8080
+cargo run -- --verbose --fps 15                                # 每帧打一行，15 fps
+cargo run -- --serial /dev/ttyACM1                             # 指定串口
+cargo run --release -- --serial /dev/ttyACM0,/dev/ttyACM1      # 双口分带并行
+cargo run --release -- --host 192.168.1.23                     # 走 WiFi，端口缺省 8080
+cargo run --release -- --serial /dev/ttyACM0 --host 192.168.1.23  # 串口与 WiFi 分带并行
+cargo run --release -- --fps 15 --host 192.168.1.23 --port 8080
 ```
 
-链路用子命令选：`serial`（USB CDC / 板载 CH343 的 UART0）或 `wifi`（板子作 TCP 服务端，本端连过去）。
-其余参数是全局的，**要写在子命令前面**。板子 IP 看固件 RTT 日志里 `wifi up, tcp server on ...` 那行。
+`--host` 开 WiFi 链路（板子作 TCP 服务端，本端连过去），`--serial` 开串口链路（USB CDC / 板载
+CH343 的 UART0）；都不给则自动探测所有 USB 串口。板子 IP 看固件 RTT 日志里 `wifi up, tcp server on ...` 那行。
+
+多条链路是**帧内抢占式 + 一帧在飞**：一帧的所有批共用一个原子游标，哪条链路空下来就抢下一批（快的抢得多）；整帧推完才换帧，
+所以屏幕上的块都属于同一帧，不会出条纹。实测 USB CDC 233 KB/s + WiFi 342 KB/s ≈ 575 KB/s、7.6 fps；
+按固定分带切只有 448 KB/s，按速率切更差（134 KB/s）。
+残留风险：两条链路延迟差大时，上一帧末尾的块可能晚于下一帧开头的块落屏，那一块会短暂停在旧内容，靠后续帧自愈。
 
 | 参数 | 缺省 | 说明 |
 |---|---|---|
 | `--list` | | 列出输出与串口后退出 |
 | `-v, --verbose` | | 每帧打一行（帧号、脏块数、实际发出的块数） |
 | `--output NAME` | 第一个输出 | Wayland 输出名 |
-| `serial --serial A,B` | 全部 USB 串口 | 逗号分隔（也可重复给）；所有口逐块并行抢发，`ttyACMx` 会自动换成 by-id 稳定路径 |
-| `serial --baud N` | `2000000` | USB CDC 链路会忽略；走 UART0 时必须与固件一致 |
-| `wifi --host IP` | 必填 | 板子的 IP（固件 RTT 日志里 `wifi up` 那行） |
-| `wifi --port N` | `8080` | 板子监听的端口，必须与固件 `TCP_PORT` 一致 |
+| `--serial A,B` | 全部 USB 串口 | 逗号分隔（也可重复给）；所有口逐块并行抢发，`ttyACMx` 会自动换成 by-id 稳定路径 |
+| `--baud N` | `2000000` | USB CDC 链路会忽略；走 UART0 时必须与固件一致 |
+| `--host IP` | 不开 WiFi | 板子的 IP（固件 RTT 日志里 `wifi up` 那行）；与 `--serial` 同给就两条链路一起发 |
+| `--port N` | `8080` | 板子监听的端口，必须与固件 `TCP_PORT` 一致 |
 | `--auto-scale` | 关 | 按实测链路速率自动在 1/2/4/8 之间降采样保帧率；默认关（一直用 scale 1 保画质） |
 | `--scale N` | 板子自报 | 采样倍数，必须是 16 的约数（1/2/4/8/16）；给了就通过 `0x05` 覆盖板子默认值，抓屏只采 `1/N` 的像素、板子把每个像素铺成 `N×N`，像素数据降到约 `1/N²` |
 | `--fps N` | `10` | **初始**目标帧率，运行中按板子上报的 `busy_ms` 自动调整（上限 30） |
