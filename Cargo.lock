@@ -4422,9 +4422,9 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "kk-ui-rs"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12955da8dc7052def60ef413e8ae91a9acf0e567cf139c7553a12c1bb2406463"
+checksum = "b87c733da05076ee45dff054c58f027f416a5a77fa853f56f5a08c3422ccd166"
 dependencies = [
  "encoding_rs",
 ]

@@ -329,6 +329,7 @@ pub static APP: App = App {
     routes: &ROUTES,
     int_bindings: &INT_BINDINGS,
     bool_bindings: &BOOL_BINDINGS,
+    line_inputs: &[],
     confirm_descs: &CONFIRM_DESCS,
     texts: Texts {
         return_text: "返回",
