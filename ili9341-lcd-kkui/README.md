@@ -2,12 +2,12 @@
 
 把 `kk-ui-rs`（[KK_UI](https://gitee.com/keysking/kk_ui) 的 Rust 移植）跑在野火 2.8 寸
 ILI9341 屏上，内容是官方标准 Demo 的原样移植：首页图标选择器、设置菜单、组件演示、
-数据监测、关于设备、波形自绘页，以及整数/开关编辑器、确认框、消息框与 Toast。
+数据监测、关于设备、波形自绘页、数学自绘页，以及整数/开关编辑器、确认框、消息框与 Toast。
 
 - 栈：`esp-hal 1.2` + `esp-rtos` + `embassy`（`#[esp_rtos::main]`）
 - 显示：`ili9341 0.6`（`graphics` 特性）+ `embedded-graphics-core`，8080-16 位并口
   由本目录的 `display.rs` 打时序
-- UI：`kk-ui-rs`（`../kk-ui-rs`，只依赖 `core`），画布尺寸由本例子给定：160×120 的
+- UI：`kk-ui-rs 0.2`（crates.io，只依赖 `core`），画布尺寸由本例子给定：160×120 的
   1 bit 画布**放大 2 倍铺满** 320×240 的屏，黑底白字。菜单因此能显示 6 行，首页图标组
   与弹窗按画布高度垂直居中；换成别的画布只改 `CANVAS_WIDTH`/`CANVAS_HEIGHT`（行高仍 16 px）
 - 刷新：`display::blit_canvas` 每条逻辑行展开成物理行后整行递交，全屏一次约 34 ms（≈29 fps
@@ -57,8 +57,8 @@ ILI9341 屏上，内容是官方标准 Demo 的原样移植：首页图标选择
 | 短按（不足 700 ms） | `确定` |
 | 按住超过 700 ms | `向下` |
 
-没有第三个键：另有一串每 2.5 s 注入一次的自动演示按键（见 `main.rs` 的
-`AUTOPLAY_KEYS`），没人操作时界面也会自己走遍各页与各类弹窗。
+没有第三个键：没人操作时 `app::Autoplay` 每 500 ms 按当前界面状态注入一次按键
+（见 `src/app/autoplay.rs`），界面会自己走遍各页与各类弹窗。
 
 ## 运行
 
@@ -77,16 +77,16 @@ RTT 日志正常时是这样：
 [INFO ] t=5004ms page=1 frames=19
 ```
 
-`page=` 是当前页面编号（1 首页、2 设置、3 数据监测、4 波形、5 关于设备、6 组件演示），
-自动演示会让它不断变化。
+`page=` 是 `APP.routes` 里的下标 + 1（1 首页、2 设置、3 数据监测、4 波形、5 关于设备、
+6 组件演示、7 数学），自动演示会让它不断变化。
 
 ## 说明
 
-- 本目录与 `../kk_ui_rs` 属于 `kkui-rs/` 这个**独立 workspace**：Cargo 依赖在这里
-  各自钉版本，不用仓库根的 `workspace.dependencies`，产物落在 `kkui-rs/target/`。
+- `kk-ui-rs` 走 crates.io 0.2（版本登记在仓库根 `Cargo.toml`），`src/app.rs` 与
+  `src/app/` 是库自带 `examples/sim/app/` 的副本，只改了图标路径与「屏幕尺寸」文案。
 - 亮度控制：C 版 Demo 会调 `OLED_SetContrast()`，本屏背光直接接 GND、没有可调光通路，
   所以照 UI 的约定如实上报「不支持」——第一次 `process_events` 后「屏幕亮度」条目会被
   置灰（带 ⊘ 标记）并弹一次 Toast。其余条目都是正常可用的。
-- 「屏幕尺寸」一栏写 `128x64@2x`、「刷新方式」写 `Blocking`，与真实呈现方式一致。
+- 「屏幕尺寸」一栏写 `160x120@2x`、「刷新方式」写 `Blocking`，与真实呈现方式一致。
 - 8080 并口占掉 18 根 GPIO，其中 GPIO8 是板载 WS2812B 的数据脚（会乱闪，功能无影响），
   GPIO15 是 JTAG 源选择 strapping（默认 eFuse 下被忽略）。

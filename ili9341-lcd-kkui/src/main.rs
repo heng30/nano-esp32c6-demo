@@ -123,6 +123,19 @@ impl Button {
     }
 }
 
+/// 当前页面在 `APP.routes` 里的下标 + 1，`0` 表示尚未初始化；路由句柄本身给不了 defmt。
+fn page_slot(page: Option<&'static kk_ui::PageRoute>) -> u8 {
+    let Some(page) = page else { return 0 };
+    match app::APP
+        .routes
+        .iter()
+        .position(|route| core::ptr::eq(*route, page))
+    {
+        Some(index) => index as u8 + 1,
+        None => 0,
+    }
+}
+
 #[esp_rtos::main]
 async fn main(_spawner: Spawner) -> ! {
     rtt_target::rtt_init_defmt!();
@@ -167,13 +180,7 @@ async fn main(_spawner: Spawner) -> ! {
     );
 
     let buffer = FRAME_BUFFER.init([0u8; Frame::buffer_len(CANVAS_WIDTH, CANVAS_HEIGHT)]);
-    let mut ui = KkUi::new(
-        &app::APP,
-        app::Wave::new(),
-        buffer,
-        CANVAS_WIDTH,
-        CANVAS_HEIGHT,
-    );
+    let mut ui = KkUi::new(&app::APP, buffer, CANVAS_WIDTH, CANVAS_HEIGHT);
     let now = 0u32;
     let status = ui.init();
     info!(
@@ -193,7 +200,7 @@ async fn main(_spawner: Spawner) -> ! {
     let mut frames = 0u32;
     let mut blit_us = 0u64;
     let mut flushes = 0u32;
-    let mut last_state = (0u16, 0u16, false);
+    let mut last_state = (0u8, 0u16, false);
     let mut last_change = 0u32;
 
     loop {
@@ -204,7 +211,7 @@ async fn main(_spawner: Spawner) -> ! {
             let key = autoplay.next_key(&ui);
             info!(
                 "autoplay page={} sel={} dialog={} key={}",
-                ui.current_page(),
+                page_slot(ui.current_page()),
                 ui.selected_index(),
                 ui.dialog_open(),
                 key
@@ -222,7 +229,11 @@ async fn main(_spawner: Spawner) -> ! {
         app::update(&mut ui, now);
         app::process_events(&mut ui);
 
-        let state = (ui.current_page(), ui.selected_index(), ui.dialog_open());
+        let state = (
+            page_slot(ui.current_page()),
+            ui.selected_index(),
+            ui.dialog_open(),
+        );
         if state != last_state {
             last_state = state;
             last_change = now;
@@ -254,7 +265,7 @@ async fn main(_spawner: Spawner) -> ! {
             info!(
                 "t={}ms page={} sel={} dialog={} still={} frames={} blit={}us",
                 now,
-                ui.current_page(),
+                page_slot(ui.current_page()),
                 ui.selected_index(),
                 ui.dialog_open(),
                 now.wrapping_sub(last_change),
