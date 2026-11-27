@@ -3,6 +3,13 @@
 //! 不回 ACK，丢了就丢了，画面靠后续帧补），整帧的块都写完就发布下一帧。
 //! 板子的状态（帧率/忙碌毫秒）只从控制命令（ping）的应答里拿。
 
+mod frame;
+mod link;
+
+use clap::Parser;
+use frame::{Frame, TILE, Tile};
+use link::{Link, LinkError, Report};
+use screen_capture::CaptureStreamConfig;
 use std::{
     sync::{
         Arc, Mutex,
@@ -11,15 +18,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-
-use clap::Parser;
-use screen_capture::CaptureStreamConfig;
-
-mod frame;
-mod link;
-
-use frame::{Frame, TILE, Tile};
-use link::{Link, LinkError, Report};
 
 /// 等板子上报分辨率的时长上限：它一启动就在报、每 500 ms 一轮，3 秒够跑好几轮。
 const GEOMETRY_WAIT: Duration = Duration::from_secs(3);
@@ -716,7 +714,13 @@ fn send_loop(mut link: Link, shared: Arc<Shared>, cancel: Arc<AtomicBool>, index
         let last = batch + 1 == job.batches;
         let sent_at = Instant::now();
         // batch/total 板子不解析（超 255 会绕回），只带出去方便诊断
-        match link.send_tiles(job.frame_no, (batch + 1) as u8, job.batches as u8, tiles, last) {
+        match link.send_tiles(
+            job.frame_no,
+            (batch + 1) as u8,
+            job.batches as u8,
+            tiles,
+            last,
+        ) {
             Ok(encoded) => {
                 let sent_us = sent_at.elapsed().as_micros() as u64;
                 shared.port_us[index].fetch_add(sent_us, Ordering::Relaxed);
@@ -764,7 +768,9 @@ fn finish_frame(shared: &Shared, job: &Arc<Job>) {
     }
     // 整帧推完才放行下一帧：屏幕上的块必须属于同一帧，否则出现条纹
     if let Ok(mut slot) = shared.job.lock()
-        && slot.as_ref().is_some_and(|current| Arc::ptr_eq(current, job))
+        && slot
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, job))
     {
         *slot = None;
     }
