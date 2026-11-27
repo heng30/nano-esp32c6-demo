@@ -1,0 +1,22 @@
+[package]
+name = "ili9341-lcd-video-player"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+esp-alloc.workspace = true
+embassy-executor.workspace = true
+embassy-time.workspace = true
+critical-section.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+
+ili9341.workspace = true
+display-interface.workspace = true
+embedded-hal.workspace = true
+font8x8.workspace = true
+zune-jpeg.workspace = true

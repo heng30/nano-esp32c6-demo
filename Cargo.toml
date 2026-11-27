@@ -18,6 +18,7 @@ members = [
   "ili9341-lcd-slint",
   "ili9341-lcd-lvgl",
   "ili9341-lcd-kkui",
+  "ili9341-lcd-video-player",
   "ili9341-lcd-secondary-screen",
   "secondary-screen-desktop",
 ]
@@ -48,6 +49,8 @@ serialport = { version = "4.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
 display-interface = { version = "0.5", default-features = false }
 ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
+# MJPEG 帧解码；默认特性带 x86/neon SIMD 与 std，裸机只要纯 Rust 路径。
+zune-jpeg = { version = "0.5", default-features = false }
 
 kk-ui-rs = { version = "0.3", default-features = false, features = [
   "cjk-fonts",
