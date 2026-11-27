@@ -1,0 +1,16 @@
+[package]
+name = "ssd1306-oled-spi-kkui"
+version.workspace = true
+edition.workspace = true
+description = "在 SSD1306 128×64 OLED（SPI）上运行 kk-ui-rs 移植版 KK_UI 标准 Demo"
+
+[dependencies]
+esp-hal.workspace = true
+esp-rtos.workspace = true
+esp-bootloader-esp-idf.workspace = true
+embassy-executor.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+static_cell.workspace = true
+kk-ui-rs.workspace = true

@@ -21,6 +21,7 @@ members = [
   "ili9341-lcd-kkui",
   "ili9341-lcd-video-player",
   "ili9341-lcd-secondary-screen",
+  "ssd1306-oled-spi-kkui",
   "secondary-screen-desktop",
 ]
 
