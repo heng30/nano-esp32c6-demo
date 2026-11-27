@@ -6,7 +6,7 @@
 确认框、消息框与 Toast。
 
 - 栈：`esp-hal 1.2` + `esp-rtos` + `embassy`（`#[esp_rtos::main]`）
-- 显示：本目录 `display.rs` 手写 SSD1306 SPI 驱动（8 MHz），只用 5 根 GPIO，不引第三方屏驱动
+- 显示：`ssd1306 0.10`（crates.io，只开 `BasicMode`，horizontal 寻址整帧一次 `draw`）+ `embedded-hal-bus` 的 `ExclusiveDevice` 按事务翻转 CS，SPI 8 MHz，只用 5 根 GPIO
 - UI：`kk-ui-rs 0.3`（crates.io，只依赖 `core`，开 `cjk-fonts` 内嵌 16×16 中文点阵）。
   画布就是屏的 GDDRAM：128×64 的 1 bit 帧缓冲（1024 字节）与 SSD1306 的页式布局逐字节一致，
   所以一帧就是一次连续 SPI 写，**不放大、不做位序转换**

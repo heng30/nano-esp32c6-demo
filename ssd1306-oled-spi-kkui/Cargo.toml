@@ -13,4 +13,6 @@ defmt.workspace = true
 rtt-target.workspace = true
 panic-rtt-target.workspace = true
 static_cell.workspace = true
+ssd1306.workspace = true
+embedded-hal-bus.workspace = true
 kk-ui-rs.workspace = true

@@ -49,6 +49,7 @@ critical-section = { version = "1.2", default-features = false }
 # 定点 MP3 解码（libhelix 衍生）：C6 没有 FPU，浮点解码器跑不动实时，只能用这个。
 threepm = { version = "0.3", default-features = false }
 font8x8 = { version = "0.3", default-features = false }
+ssd1306 = { version = "0.10", default-features = false }
 zune-jpeg = { version = "0.5", default-features = false }
 serialport = { version = "4.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }

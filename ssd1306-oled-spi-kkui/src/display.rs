@@ -1,51 +1,40 @@
-//! SSD1306 128×64 OLED 的 SPI 驱动：只写不读，整帧按页一次递交。
+//! SSD1306 128×64 OLED 的 SPI 屏：初始化、地址窗口与整帧递交都交给 `ssd1306` crate。
 //!
 //! kk-ui 的帧缓冲与 SSD1306 的 GDDRAM 布局一致（每字节是同列连续 8 行、bit0 在最上），
-//! 所以一帧就是一次连续写，不做位序转换、也不逐行拼包。
+//! 所以整帧就是一次 `draw`：horizontal 寻址模式写满 1024 字节自动回卷到起点。
 
 use defmt::info;
+use embedded_hal_bus::spi::ExclusiveDevice;
 use esp_hal::{Blocking, delay::Delay, gpio::Output, spi::master::Spi};
+use ssd1306::{
+    Ssd1306,
+    command::AddrMode,
+    mode::BasicMode,
+    prelude::{DisplayRotation, DisplaySize128x64, SPIInterface},
+};
 
 /// 屏宽（像素）。
 pub const WIDTH: u16 = 128;
 /// 屏高（像素）。
 pub const HEIGHT: u16 = 64;
 /// GDDRAM 页数：每页 8 行。
-const PAGES: u8 = (HEIGHT / 8) as u8;
+const PAGES: u16 = HEIGHT / 8;
 
-/// 初始化命令序列：`(命令, 参数)`，参数同样走命令通道。
-const INIT: &[(u8, &[u8])] = &[
-    (0xAE, &[]),     // display off
-    (0xD5, &[0x80]), // clock divide ratio
-    (0xA8, &[0x3F]), // multiplex ratio 1/64
-    (0xD3, &[0x00]), // display offset 0
-    (0x40, &[]),     // start line 0
-    (0x8D, &[0x14]), // charge pump on
-    (0x20, &[0x00]), // horizontal addressing mode
-    (0xA1, &[]),     // segment remap
-    (0xC8, &[]),     // COM scan direction reversed
-    (0xDA, &[0x12]), // COM pins configuration
-    (0x81, &[0xCF]), // contrast
-    (0xD9, &[0xF1]), // pre-charge period
-    (0xDB, &[0x40]), // VCOMH deselect level
-    (0xA4, &[]),     // display follows RAM
-    (0xA6, &[]),     // normal (not inverted)
-    (0x2E, &[]),     // deactivate scroll
-    (0xAF, &[]),     // display on
-];
+/// 清屏用的空帧，长度与整屏 GDDRAM 一致。
+const BLANK: [u8; (WIDTH * PAGES) as usize] = [0; (WIDTH * PAGES) as usize];
 
-/// 已初始化的屏：SPI 总线与 DC/CS 两根控制线。
+/// SPI 设备（CS 由 `ExclusiveDevice` 按事务翻转）+ 命令/数据选择线。
+type Interface<'d> =
+    SPIInterface<ExclusiveDevice<Spi<'d, Blocking>, Output<'d>, Delay>, Output<'d>>;
+
+/// 已初始化的屏。
 pub struct Display<'d> {
-    /// SPI 主机，8 位一拍，无 MISO。
-    spi: Spi<'d, Blocking>,
-    /// 数据/命令选择：低=命令，高=数据。
-    dc: Output<'d>,
-    /// 片选，低有效；整帧传输期间保持低。
-    cs: Output<'d>,
+    /// `ssd1306` 的驱动实例，BasicMode 只做裸写、不自带第二份帧缓冲。
+    inner: Ssd1306<Interface<'d>, DisplaySize128x64, BasicMode>,
 }
 
 impl<'d> Display<'d> {
-    /// 复位、初始化并清屏。
+    /// 复位、初始化并清屏；地址窗口设为整屏，之后每帧一次 [`Display::flush`] 即可。
     pub fn new(
         spi: Spi<'d, Blocking>,
         dc: Output<'d>,
@@ -53,56 +42,30 @@ impl<'d> Display<'d> {
         cs: Output<'d>,
         delay: &mut Delay,
     ) -> Self {
-        rst.set_low();
-        delay.delay_millis(20);
-        rst.set_high();
-        delay.delay_millis(20);
-
-        let mut this = Self { spi, dc, cs };
-        this.cs.set_low();
-        for (command, args) in INIT {
-            this.commands(&[*command]);
-            this.commands(args);
-        }
-        // 上电后 GDDRAM 是随机值，先整屏清一遍再放开片选。
-        this.commands(&[0x21, 0, (WIDTH - 1) as u8]);
-        this.commands(&[0x22, 0, PAGES - 1]);
-        this.data(&[0u8; WIDTH as usize * PAGES as usize]);
-        this.cs.set_high();
+        let device = ExclusiveDevice::new(spi, cs, Delay::new()).expect("cs pin");
+        let mut inner = Ssd1306::new(
+            SPIInterface::new(device, dc),
+            DisplaySize128x64,
+            DisplayRotation::Rotate0,
+        );
+        inner.reset(&mut rst, delay).expect("reset ssd1306");
+        // 整块连续写只有 horizontal 模式成立，page 模式写满一页会回卷到同页开头。
+        inner
+            .init_with_addr_mode(AddrMode::Horizontal)
+            .expect("init ssd1306");
+        inner
+            .set_draw_area((0, 0), (WIDTH as u8, HEIGHT as u8))
+            .expect("set draw area");
+        inner.draw(&BLANK).expect("clear ssd1306");
         info!("ssd1306 ready {}x{}", WIDTH, HEIGHT);
-        this
+        Self { inner }
     }
 
     /// 把整块 1 bit 画布推进 GDDRAM。
     pub fn flush(&mut self, buffer: &[u8]) {
-        debug_assert_eq!(buffer.len(), WIDTH as usize * PAGES as usize);
-        self.cs.set_low();
-        // 每帧重设窗口：horizontal 模式下写满会自动回卷，重设只为不依赖这个行为。
-        self.commands(&[0x21, 0, (WIDTH - 1) as u8]);
-        self.commands(&[0x22, 0, PAGES - 1]);
-        self.data(buffer);
-        self.cs.set_high();
-    }
-
-    /// 命令通道：DC 拉低后写若干字节。
-    fn commands(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-        self.dc.set_low();
-        self.write(bytes);
-    }
-
-    /// 数据通道：DC 拉高后写若干字节。
-    fn data(&mut self, bytes: &[u8]) {
-        self.dc.set_high();
-        self.write(bytes);
-    }
-
-    /// SPI 写，失败只记日志：屏掉线不该让固件停摆。
-    fn write(&mut self, bytes: &[u8]) {
-        if let Err(error) = self.spi.write(bytes) {
-            info!("spi write failed: {:?}", error);
+        debug_assert_eq!(buffer.len(), BLANK.len());
+        if self.inner.draw(buffer).is_err() {
+            info!("ssd1306 write failed");
         }
     }
 }
