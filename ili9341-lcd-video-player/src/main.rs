@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-use alloc::vec;
+use alloc::vec::Vec;
 use defmt::{info, warn};
 use embassy_executor::Spawner;
 use embassy_time::{Instant, Timer};
@@ -20,13 +20,11 @@ use zune_jpeg::{JpegDecoder, zune_core::bytestream::ZCursor};
 mod avi;
 mod display;
 
-/// 内嵌的测试视频：160×120、25 fps、218 帧、MJPEG（无音轨），由 `assets/videos/` 里
-/// 320×240 的原片缩放重编码而来，写屏时 2× 放大铺满整屏。
-const VIDEO: &[u8] = include_bytes!("../../assets/videos/test-160x120-without-audio.avi");
-/// 堆：一帧解码 RGB 160×120×3 = 57.6 KB + 整帧 RGB565 153.6 KB。
-const HEAP_SIZE: usize = 256 * 1024;
-/// 解码出来的画面宽（像素）。
-const FRAME_W: usize = 160;
+/// 内嵌的测试视频：320×240、25 fps、218 帧、MJPEG（无音轨），解码结果原样铺满整屏。
+const VIDEO: &[u8] = include_bytes!("../../assets/videos/test-320x240-without-audio.avi");
+/// 堆：一帧解码 RGB 320×240×3 = 230.4 KB，就地压成 RGB565 后不需要第二份缓冲。
+/// zune-jpeg 自己还要一份系数缓冲，256 KB 会在帧尾分配失败，留到 368 KB。
+const HEAP_SIZE: usize = 368 * 1024;
 /// 帧率叠层的字符格数，每格 8×8 像素。
 const HUD_COLS: usize = 8;
 /// 帧率叠层宽（像素）。
@@ -37,27 +35,17 @@ const FPS_WINDOW_MS: u64 = 1000;
 esp_bootloader_esp_idf::esp_app_desc!();
 
 /// 解一帧 MJPEG，返回 (RGB 像素, 解码微秒数)。
-fn decode_frame(jpeg: &[u8]) -> (alloc::vec::Vec<u8>, u64) {
+fn decode_frame(jpeg: &[u8]) -> (Vec<u8>, u64) {
     let started = Instant::now();
-    // 默认输出就是 RGB，与 zune-jpeg 的 `DecoderOptions::default()` 一致，不用额外配置
+    // 默认输出就是 RGB，与 zune-jpeg 的 `DecoderOptions::default()` 一致
     let rgb = JpegDecoder::new(ZCursor::new(jpeg))
         .decode()
         .expect("mjpeg frame decode failed");
     (rgb, started.elapsed().as_micros())
 }
 
-/// 把一个源行（160 像素）转成 RGB565 并横向 2× 放大成整屏宽的一行。
-fn expand_row(rgb: &[u8], src_row: usize, out: &mut [u16; display::WIDTH]) {
-    for (x, cell) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-        let p = &rgb[(src_row * FRAME_W + x) * 3..][..3];
-        let pixel =
-            (u16::from(p[0] & 0xf8) << 8) | (u16::from(p[1] & 0xfc) << 3) | u16::from(p[2] >> 3);
-        *cell = [pixel, pixel];
-    }
-}
-
-/// 在右上角画 "NN fps"：8×8 点阵、黑底白字，直接写进帧缓冲。
-fn draw_hud(frame: &mut [u16], fps: u32) {
+/// 在右上角画 "NNN fps"：8×8 点阵、黑底白字，直接写进解码出来的 RGB 缓冲。
+fn draw_hud(rgb: &mut [u8], width: usize, fps: u32) {
     let mut text = [b' '; HUD_COLS];
     text[7] = b's';
     text[6] = b'p';
@@ -73,14 +61,29 @@ fn draw_hud(frame: &mut [u16], fps: u32) {
         at -= 1;
     }
 
-    let left = display::WIDTH - HUD_W;
+    let left = width - HUD_W;
     for x in 0..HUD_W {
         let glyph = BASIC_LEGACY[text[x / 8] as usize];
         for (y, row) in glyph.iter().enumerate() {
-            frame[y * display::WIDTH + left + x] =
-                if (row >> (x % 8)) & 1 == 1 { 0xffff } else { 0 };
+            let level = if (row >> (x % 8)) & 1 == 1 { 0xff } else { 0 };
+            let at = (y * width + left + x) * 3;
+            rgb[at..at + 3].copy_from_slice(&[level, level, level]);
         }
     }
+}
+
+/// 把 RGB 就地压成 RGB565：第 i 个像素写到 2i，源数据在 3i，写指针永远不越过读指针。
+fn pack_rgb565(rgb: &mut [u8]) -> &mut [u16] {
+    let pixels = rgb.len() / 3;
+    let base = rgb.as_mut_ptr();
+    for i in 0..pixels {
+        let pixel = unsafe {
+            let (r, g, b) = (*base.add(3 * i), *base.add(3 * i + 1), *base.add(3 * i + 2));
+            (u16::from(r & 0xf8) << 8) | (u16::from(g & 0xfc) << 3) | u16::from(b >> 3)
+        };
+        unsafe { base.cast::<u16>().add(i).write_unaligned(pixel) };
+    }
+    unsafe { core::slice::from_raw_parts_mut(base.cast::<u16>(), pixels) }
 }
 
 #[esp_rtos::main]
@@ -94,7 +97,7 @@ async fn main(_spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
-    let delay = Delay::new();
+    let mut delay = Delay::new();
 
     // D0–D15 依次是 GPIO0–7、GPIO8、GPIO10、GPIO11、GPIO18–22，WR 走 GPIO23，DC 走 GPIO15
     let data = [
@@ -115,21 +118,22 @@ async fn main(_spawner: Spawner) -> ! {
         Output::new(peripherals.GPIO21, Level::Low, OutputConfig::default()),
         Output::new(peripherals.GPIO22, Level::Low, OutputConfig::default()),
     ];
-    let mut display = display::Display::new(
+    let mut display = display::new(
         data,
         Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default()),
         Output::new(peripherals.GPIO23, Level::High, OutputConfig::default()),
-        &delay,
+        &mut delay,
     );
+    let (width, height) = (usize::from(display.width()), usize::from(display.height()));
 
     let video = avi::Avi::parse(VIDEO).expect("embedded avi is malformed");
-    if (video.width(), video.height()) != (FRAME_W as u16, display::HEIGHT as u16 / 2) {
+    if (video.width(), video.height()) != (width as u16, height as u16) {
         warn!(
             "video is {}x{}, player expects {}x{}",
             video.width(),
             video.height(),
-            FRAME_W,
-            display::HEIGHT / 2
+            width,
+            height
         );
     }
     let frame_delay = video.frame_delay();
@@ -141,8 +145,6 @@ async fn main(_spawner: Spawner) -> ! {
         frame_delay.as_micros()
     );
 
-    let mut line = [0u16; display::WIDTH];
-    let mut frame = vec![0u16; display::WIDTH * display::HEIGHT];
     let mut fps = 0u32;
     let mut window = Instant::now();
     let mut counted = 0u32;
@@ -154,19 +156,20 @@ async fn main(_spawner: Spawner) -> ! {
 
         for jpeg in video.frames() {
             let frame_started = Instant::now();
-            let (rgb, decode) = decode_frame(jpeg);
+            let (mut rgb, decode) = decode_frame(jpeg);
             decode_us += decode;
+            draw_hud(&mut rgb, width, fps);
 
             let draw_started = Instant::now();
-            // 整帧 2× 放大进帧缓冲（纵向 2× 用同一行写两遍）
-            for src_row in 0..display::HEIGHT / 2 {
-                expand_row(&rgb, src_row, &mut line);
-                frame[src_row * 2 * display::WIDTH..][..display::WIDTH].copy_from_slice(&line);
-                frame[(src_row * 2 + 1) * display::WIDTH..][..display::WIDTH]
-                    .copy_from_slice(&line);
-            }
-            draw_hud(&mut frame, fps);
-            display.draw_frame(&frame);
+            display
+                .draw_raw_slice(
+                    0,
+                    0,
+                    (width - 1) as u16,
+                    (height - 1) as u16,
+                    pack_rgb565(&mut rgb),
+                )
+                .expect("draw failed");
             draw_us += draw_started.elapsed().as_micros();
 
             played += 1;
