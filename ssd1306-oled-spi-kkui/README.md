@@ -36,16 +36,16 @@
 
 ## 按键
 
-板载 **BOOT** 键（GPIO9，内部弱上拉，按下为低）：
+三个外接轻触按钮，另一头接 GND；GPIO 内部上拉，按下为低：
 
-| 操作 | 含义 |
-|------|------|
-| 短按（不足 700 ms） | `确定` |
-| 按住超过 700 ms | `向下` |
+| 按钮 | C6 | 含义 |
+|------|----|------|
+| 上 | GPIO10 | 光标上移 / 数值增大 |
+| 下 | GPIO11 | 光标下移 / 数值减小 |
+| 确认 | GPIO18 | 进入 / 提交 / 关闭弹窗 |
 
-没有第三个键：没人操作时 `app::Autoplay` 每 500 ms 按当前界面状态注入一次按键
-（`src/app/autoplay.rs`，会顺带送编码器增量来翻位掩码），界面自己走遍各页与各类弹窗。
-连续 15 秒界面状态不变就重置自动演示，避免某个弹窗把它卡死。
+消抖 15 ms（`DEBOUNCE_MS`），按住不放不会重复触发。没有自动演示：界面只响应按键，
+不去按就一直停在当前页。
 
 ## 运行
 
@@ -59,8 +59,7 @@ RTT 日志正常时是这样：
 [INFO ] ssd1306 ready 128x64
 [INFO ] kk_ui init: ok canvas=128x64
 [INFO ] first frame flushed
-[INFO ] autoplay page=1 sel=0 dialog=false key=0 enc=0
-[INFO ] t=5003ms page=2 sel=1 dialog=false still=480 frames=41 flush=1us
+[INFO ] t=5003ms page=1 sel=0 dialog=false frames=12 flush=1123us
 ```
 
 `page=` 是 `APP.routes` 里的下标 + 1（1 首页、2 设置、3 数据监测、4 波形、5 关于设备、
