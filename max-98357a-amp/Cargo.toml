@@ -1,0 +1,12 @@
+[package]
+name = "max-98357a-amp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+esp-hal.workspace = true
+esp-bootloader-esp-idf.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+threepm.workspace = true

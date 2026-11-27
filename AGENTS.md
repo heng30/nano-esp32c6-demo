@@ -38,6 +38,7 @@ nanoESP32-C6（MuseLab v1.0），模组 `ESP32-C6-WROOM-1-N16`，芯片 rev v0.1
 | `lib/screen-capture`、`lib/screen-capture-wayland-wlr` | 宿主机抓屏库（源自上游 `heng30/wayshot`）：`zwlr_screencopy_v1` 实现 + 类型/trait 定义 | 同为宿主机 crate，别指望能编到 riscv32；抓屏常量与 `secondary-screen-desktop/src/link.rs` 无关 |
 | `qapass-1602a-lcd/` | 1602A 字符屏，HD44780 4 位并行 | |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | `DEFMT_LOG="off"`，不用 `rtt-target`；`#[panic_handler]` 自己实现 |
+| `max-98357a-amp/` | MAX98357A I2S 功放轮流播放内嵌 `assets/videos/test.wav`（8 s）与 `test.mp3`（8.7 s）：`esp_hal::i2s::master` + AHB_GDMA，BCLK=GPIO4 / LRC=GPIO5 / DIN=GPIO6；MP3 用 `threepm`（ThreePM，libhelix 派生的**定点**解码器，C6 无 FPU，纯 Rust 浮点解码器跑不动实时） | **第二个需要交叉 C 工具链的示例**：先 `nix-shell max-98357a-amp/shell.nix`；`AR_*` 必须是 binutils 的 `riscv32-none-elf-ar`（`gcc-ar` 会失败），`CPATH` 指向 `src/cshim/include` 挡宿主 glibc 头；音频在 flash 里，DMA 读不了 flash，按 64 KB 一块拷进 `.bss` 的 `DmaTxBuf` 再送；只用 I2S0 + DMA_CH0，不需要 `esp-alloc` / `esp-radio`；接线见 `max-98357a-amp/README.md` |
 | `ble-server/` | BLE 示例，`trouble-host` + `esp-radio`；二进制名 `server`（`[[bin]]` 指定） | `.cargo/config.toml` 里多一条 `build-std = ["core"]`；链接参数直接写在 `rustflags`，**不用 `build.rs`** |
 | `ble-led/` | BLE 控制板载 WS2812B：SIG `0x1815`/`0x2BE2` 特性写 ASCII `on`/`off`，`trouble-host` + `esp-hal-smartled` | 同上：`build-std` + `rustflags` 给链接参数，无 `build.rs`；接线见 `ble-led/README.md` |
 | `esp32c6-top50/` | 抓下来做参考的上游仓库克隆 + 报告（`REPORT.md`、`BARE-CHIP-ONLY.md`） | **只读**，已 gitignore，不要改、不要当本仓代码提交 |

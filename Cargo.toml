@@ -6,6 +6,7 @@ members = [
   "1588BS",
   "baike",
   "rainbow",
+  "max-98357a-amp",
   "http-ping",
   "bilibili-follower",
   "ble-server",
@@ -44,13 +45,14 @@ overflow-checks = false
 static_cell = { version = "2.1", default-features = false }
 critical-section = { version = "1.2", default-features = false }
 
+# 定点 MP3 解码（libhelix 衍生）：C6 没有 FPU，浮点解码器跑不动实时，只能用这个。
+threepm = { version = "0.3", default-features = false }
 font8x8 = { version = "0.3", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false }
 serialport = { version = "4.10", default-features = false }
 smart-leds-trait = { version = "0.3", default-features = false }
 display-interface = { version = "0.5", default-features = false }
 ili9341 = { version = "0.6", default-features = false, features = ["graphics"] }
-# MJPEG 帧解码；默认特性带 x86/neon SIMD 与 std，裸机只要纯 Rust 路径。
-zune-jpeg = { version = "0.5", default-features = false }
 
 kk-ui-rs = { version = "0.3", default-features = false, features = [
   "cjk-fonts",

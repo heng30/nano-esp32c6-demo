@@ -33,6 +33,7 @@ nanoESP32-C6（MuseLab v1.0），模组为 `ESP32-C6-WROOM-1-N16`（芯片 rev v
 |---|---|---|
 | `http-ping/` | 起 WiFi AP（`esp32c6` / `12345678` / `192.168.2.1`），`GET /ping` 回 `pong` 并闪板载 RGB，内置 DHCP 服务端 | crate 内常量为准 |
 | `rainbow/` | 板载 WS2812B（GPIO8）彩虹循环，`esp-hal-smartled` + RMT，无 embassy | 见 `src/main.rs` 注释 |
+| `max-98357a-amp/` | MAX98357A I2S 单声道功放轮流播放内嵌 WAV 与 MP3（44.1 kHz 立体声，一轮约 16.7 s），`esp_hal::i2s` + DMA，MP3 用 `threepm` 定点解码 | [链接](max-98357a-amp/README.md) |
 | `3461BS/` | 0.36 吋 4 位共阳数码管动态扫描，每秒加一 | [链接](3461BS/README.md) |
 | `1588BS/` | 1.5 吋 8×8 共阳点阵逐行扫描，循环播放全亮/棋盘/心形/叉号四帧 | [链接](1588BS/README.md) |
 | `baike/` | 10 脚单个**共阴**数码管（A–G + DP + 公共端）静态驱动，段选 GPIO0–7、公共端接 GND，0–9 每秒加一 | [链接](baike/README.md) |
