@@ -1,0 +1,17 @@
+[package]
+name = "ssd1306-oled-spi-mirui"
+version.workspace = true
+edition.workspace = true
+description = "在 SSD1306 128×64 OLED（SPI）上用 mirui 绘制音乐播放器页"
+
+[dependencies]
+esp-hal.workspace = true
+esp-alloc.workspace = true
+esp-bootloader-esp-idf.workspace = true
+defmt.workspace = true
+rtt-target.workspace = true
+panic-rtt-target.workspace = true
+ssd1306.workspace = true
+embedded-hal-bus.workspace = true
+static_cell.workspace = true
+mirui.workspace = true
